@@ -66,8 +66,106 @@ The Agent 2 process now orchestrates two durable substeps. The GPT consumer chec
 
 Packager claims use their own BEGIN IMMEDIATE transaction, random token, 300-second lease, bounded three-attempt retries, and backoff. A stale token cannot publish. DOCX files are stored first under SHA-256 names using temp-file/replace publication. The DB transaction then exposes the artifact. If that transaction fails, an orphan file may remain, but the task remains unacknowledged and no application-ready event is visible. This is durable at the local process/database boundary; external shared/object storage is a future adapter.
 
-The renderer uses exact local verified header and fact text, stable ZIP metadata, explicit Times New Roman fonts, bold headings, and preserved hyperlinks. It validates archive integrity, exact text, hyperlink targets, typography, and absence of inherited title borders. It has a bounded word budget but does not assert runtime page count or visual correctness. The validation scope and page_count_verified=false travel in the event. Representative layout QA was performed in development. Eligibility remains not_assessed, and unsupported job requirements remain visible in the outgoing JSON.
+The renderer uses exact local verified header and fact text, stable ZIP metadata, explicit Calibri fonts, bold headings, and preserved hyperlinks. It validates archive integrity, exact text, hyperlink targets, typography, and absence of inherited title borders. It has a bounded word budget but does not assert runtime page count or visual correctness. The validation scope and page_count_verified=false travel in the event. Representative layout QA was performed in development. Eligibility remains not_assessed, and unsupported job requirements remain visible in the outgoing JSON.
 
 The message includes schema_version, event_id, correlation_id, job_id, profile_version, job snapshot with full JD, resume artifact locator/hash/validation, and application_queue_order. The local artifact URI is logical; Agent 3 on the same host uses the database/storage adapter. Multi-host deployment requires a shared storage adapter and broker relay rather than assuming local paths are globally readable.
 
 The dashboard exposes a separate Agent 3 queue and checksum-checked DOCX downloads. There is no Agent 3 consumer, account creation, or browser submission in this increment. Historical draft-only records require their original profile version; header changes must not silently alter candidate identity.
+
+## Grounded writer and review gate (current Agent 2)
+
+New API calls use grounded-writer-v1: a generated summary with source IDs,
+verbatim source-backed skill names, and 2–5 rewritten bullets per selected
+experience/project entry. Source IDs are constrained by the request schema.
+Validation requires every supplied employment entry, at least one project when
+projects exist, and copies education unchanged. Structured role headings, dates
+and original link targets remain local. Numeric checks and evidence references
+are partial checks, not a semantic correctness guarantee.
+
+The renderer checks exact equality against the validated written draft, not
+against the old source prose. It recomputes draft validation against the original
+profile before packaging. A new artifact enters application_queue with
+status=review_required, and does not produce applications.ready.v1 until an
+explicit approval for its exact artifact ID. The Agent 3 view excludes
+unapproved and regenerating entries. This is a local review gate; future
+consumers must enforce status and revision too.
+
+Legacy fact-selection drafts remain supported. Approval is performed through
+the local same-origin API with artifact checksum verification. Regeneration
+revokes the unpublished old ready event after a successful replacement and
+requires a fresh review. Previous artifacts and payloads remain in revision
+history. Already-published handoffs cannot be replaced by this local workflow.
+
+Offline tests exercise structured response validation and the complete local
+pipeline with fixed responses. They do not establish live model quality,
+candidate eligibility, or exact Word pagination.
+
+## Agent 2 reliability boundary (grounded-writer-v2)
+
+The acceptance target is evidence traceability and an explicitly reviewed artifact,
+not a percentage claim of AI accuracy. Structural conformance, factual meaning,
+job relevance and document layout are different checks.
+
+Implemented flow:
+
+```mermaid
+flowchart TD
+    Q[Resume request and verified profile snapshot] --> G[Grounded generation]
+    G --> C[Durable JSON checkpoint]
+    C --> V{Validation}
+    V -->|Fail| F[Error with source ID and checkpoint ID]
+    F --> D[Offline inspection]
+    V -->|Pass| R[Deterministic DOCX rendering]
+    R --> H{Artifact-specific human review}
+    H -->|Approved| O[Application queue and outbox]
+    H -->|Revise| N[Explicit regeneration request]
+    N --> G
+```
+
+Responsibilities:
+
+- Profile: user verifies source evidence; employer/title/date anchors and education
+  remain local. The model receives professional facts, not the local contact header.
+- Writer: selects relevant content and rewrites only within the cited entry's scope.
+  One to five bullets are permitted. A sparse fact must not be padded to meet a
+  two-bullet quota. Entry IDs in the schema only include Experience and Projects.
+- Contract: schema and validator share array limits. Shape validation is combined
+  with existing reference, exact-skill, numeric, employment coverage and project
+  coverage checks. Length and semantic rules still require local checks/review.
+- Checkpoint: parsed JSON output and its source snapshot are committed before
+  validation. Initial generation and regeneration share this boundary. A request key
+  includes logical task, job, professional profile, model and writer version.
+  Reprocessing the same request revalidates the saved response without another
+  model call. A new explicit regeneration request is a separate paid operation.
+- Inspection: `python -m agent.resume_checkpoint --database data/agent.db` lists
+  checkpoint metadata. Add `--id UUID` to inspect entry counts and revalidate using
+  current code. This is read-only: it never publishes, approves or regenerates.
+- Rendering/review: existing deterministic renderer, checksum validation and
+  artifact-specific approval remain. Failed replacements retain the old artifact.
+  Only approved new writer artifacts publish `applications.ready.v1`.
+
+Migration is additive: the checkpoint table is created on first generation; no
+existing profile, queue or artifact is deleted. Old v1 written drafts retain their
+original validation version. Old failures have no checkpoint and cannot be recovered.
+Checkpoints live in the private local database; do not commit or share that database.
+
+Limitations: citations and numeric checks cannot prove semantic truth. Human review
+remains required. This increment does not implement an independent semantic critic,
+a fact-level claim editor, PDF pagination verification or a multi-host Kafka broker.
+Parsed completed JSON is checkpointed; network errors, incomplete/refused responses
+and malformed JSON are not recoverable checkpoints. A crash after the provider has
+responded but before the SQLite commit may require another call. Existing leases
+protect task ownership; this is not exactly-once provider billing.
+
+Next architecture increment, after this foundation is evaluated: normalized claim
+records (employer/project scope, exact evidence, dates, skills and metrics), a
+requirement-to-claim map, bullet-level evidence and a side-by-side correction UI.
+An optional semantic verifier may flag unsupported paraphrases but cannot replace
+source verification or artifact approval. Evaluate on redacted representative
+profiles/JDs with a human-scored claim checklist before enabling it by default.
+
+Release criteria for this increment: array boundary tests, failed-response replay
+without a generator call, snapshot isolation, read-only offline inspection, old
+writer-version compatibility, failed replacement retention, review-gated outbox,
+and the existing end-to-end tests. Synthetic tests validate mechanics, not live
+model quality. Publish all changes together after these checks pass.

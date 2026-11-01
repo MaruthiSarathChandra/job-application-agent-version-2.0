@@ -36,7 +36,7 @@ class ResumeWorkerTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT count(*) FROM outbox WHERE topic='resume.drafted.v1'").fetchone()[0],1)
         self.assertFalse(self.worker().process_one())
 
-    def test_reject_unknown_fact_and_retry_later(self):
+    def test_reject_unknown_fact_and_revalidate_without_regenerating(self):
         worker=self.worker(lambda *args: {'ordered_fact_ids':['made-up-job'],'missing_requirements':[]})
         worker.process_one()
         self.assertEqual(self.service.snapshot()['queue'][0]['status'],'resume_error')
@@ -44,8 +44,11 @@ class ResumeWorkerTests(unittest.TestCase):
         with worker.connect() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM consumer_receipts').fetchone()[0],0)
             db.execute('UPDATE resume_queue SET next_attempt_at=0')
-        self.worker().process_one()
-        self.assertEqual(self.service.snapshot()['queue'][0]['status'],'resume_draft_ready')
+        from unittest.mock import Mock
+        generator=Mock()
+        self.worker(generator).process_one()
+        generator.assert_not_called()
+        self.assertEqual(self.service.snapshot()['queue'][0]['status'],'resume_error')
 
     def test_two_workers_do_not_claim_same_request(self):
         first, second = self.worker(),self.worker()

@@ -6,6 +6,8 @@ import os
 import re
 import sqlite3
 import threading
+import tempfile
+import hashlib
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -51,7 +53,9 @@ def rules_from_request(body):
 
 
 class Service:
-    def __init__(self, database, fetcher=None, default_sources=None):
+    def __init__(self, database, fetcher=None, default_sources=None, profile_path=None):
+        self.profile_path = Path(profile_path) if profile_path else Path(database).parent / "profile.json"
+        self.profile_lock = threading.Lock()
         self.database = database
         self.fetcher = fetcher
         self.default_sources = default_sources or []
@@ -59,7 +63,8 @@ class Service:
         store = IntakeStore(database)
         store.close()
         with self.connect() as db:
-            db.executescript(SCHEMA)
+            from .resume_regeneration import SCHEMA as REGEN_SCHEMA
+            db.executescript(SCHEMA + REGEN_SCHEMA)
             db.execute("UPDATE discovery_runs SET status='interrupted' WHERE status='running'")
         
     @contextmanager
@@ -72,6 +77,43 @@ class Service:
                 yield db
         finally:
             db.close()
+
+    def read_profile(self):
+        with self.profile_lock:
+            if not self.profile_path.exists():
+                return {'profile': None, 'revision': None}
+            raw = self.profile_path.read_bytes()
+            return {'profile': json.loads(raw.decode('utf-8')),
+                    'revision': hashlib.sha256(raw).hexdigest()}
+
+    def save_profile(self, body):
+        from .resume_worker import validate_profile
+        profile = body.get('profile')
+        safe, version = validate_profile(profile)
+        if '_resume_header' not in safe:
+            raise ValueError('Please enter your name and resume contact details')
+        # Keep only the validated fields used by the worker.
+        saved = {'profile_id': safe['profile_id'], 'verified': True,
+                 'resume_header': safe['_resume_header'],
+                 'facts': [dict(f, verified=True) for f in safe['facts']]}
+        raw = json.dumps(saved, ensure_ascii=False, indent=2).encode('utf-8')
+        with self.profile_lock:
+            current = hashlib.sha256(self.profile_path.read_bytes()).hexdigest() if self.profile_path.exists() else None
+            if body.get('revision') != current:
+                raise ValueError('Profile changed in another window. Reload before saving.')
+            self.profile_path.parent.mkdir(parents=True, exist_ok=True)
+            name = None
+            try:
+                with tempfile.NamedTemporaryFile(dir=self.profile_path.parent, delete=False) as file:
+                    name = file.name
+                    file.write(raw)
+                    file.flush()
+                    os.fsync(file.fileno())
+                os.replace(name, self.profile_path)
+            finally:
+                if name and os.path.exists(name):
+                    os.unlink(name)
+        return {'revision': hashlib.sha256(raw).hexdigest(), 'profile_version': version}
 
     def event(self, run_id, kind, message):
         with self.connect() as db:
@@ -153,6 +195,7 @@ class Service:
     def snapshot(self):
         with self.connect() as db:
             return {
+                'regenerations': [dict(x) for x in db.execute('SELECT id,queue_order,status,error,created_at FROM resume_regenerations ORDER BY created_at DESC,rowid DESC')],
                 'sources': source_catalog(),
                 'applications': [dict(x) for x in db.execute('SELECT sequence,job_id,resume_artifact_id,status,payload FROM application_queue ORDER BY sequence')] if db.execute("SELECT 1 FROM sqlite_master WHERE name='application_queue'").fetchone() else [],
                 'default_sources': self.default_sources,
@@ -181,14 +224,36 @@ def make_handler(service):
         def do_GET(self):
             if self.path == '/':
                 self.reply(200, Path(__file__).with_name('web').joinpath('index.html').read_text(encoding='utf-8'), 'text/html')
+            elif self.path == '/profile':
+                self.reply(200, Path(__file__).with_name('web').joinpath('profile.html').read_text(encoding='utf-8'), 'text/html')
+            elif self.path == '/api/profile/resume':
+                try:
+                    from .resume_worker import validate_profile, validate_result
+                    from .resume_artifact import render_docx, validate_docx
+                    profile, _ = validate_profile(service.read_profile()['profile'])
+                    draft = validate_result({'ordered_fact_ids':[f['id'] for f in profile['facts']],
+                                             'missing_requirements':[]}, profile)
+                    raw = render_docx(draft, profile['_resume_header'])
+                    validate_docx(raw, draft, profile['_resume_header'])
+                    self.reply(200, raw, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                               {'Content-Disposition':'attachment; filename="profile-resume.docx"'})
+                except (ValueError, OSError, KeyError) as exc:
+                    self.reply(400, {'error':str(exc)})
+            elif self.path == '/api/profile':
+                self.reply(200, service.read_profile())
+            elif re.fullmatch(r'/api/artifacts/[a-f0-9]{64}/preview',self.path):
+                self.download_artifact(self.path.split('/')[-2], preview=True)
             elif re.fullmatch(r'/api/artifacts/[a-f0-9]{64}',self.path):
                 self.download_artifact(self.path.rsplit('/',1)[1])
+            elif self.path == '/api/diagnostics':
+                from .diagnostics import report
+                self.reply(200, report(service.database, service.profile_path))
             elif self.path == '/api/state':
                 self.reply(200, service.snapshot())
             else:
                 self.reply(404, {'error': 'Not found'})
 
-        def download_artifact(self, identifier):
+        def download_artifact(self, identifier, preview=False):
             import hashlib
             with service.connect() as db:
                 if not db.execute("SELECT 1 FROM sqlite_master WHERE name='resume_artifacts'").fetchone():
@@ -206,6 +271,12 @@ def make_handler(service):
             if hashlib.sha256(data).hexdigest()!=row['sha256']:
                 self.reply(409, {'error':'Resume artifact checksum failed'})
                 return
+            if preview:
+                from .resume_preview import preview_html
+                self.reply(200, preview_html(data), 'text/html',
+                           {'Content-Security-Policy':"default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'self'",
+                            'X-Frame-Options':'SAMEORIGIN'})
+                return
             self.reply(200,data,'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
                        {'Content-Disposition':f'attachment; filename="resume-{identifier[:12]}.docx"'})
 
@@ -216,17 +287,41 @@ def make_handler(service):
             if host != f'127.0.0.1:{self.server.server_port}' or (origin and origin != f'http://{host}'):
                 self.reply(403, {'error': 'Only same-origin local requests are allowed'})
                 return
-            if self.path != '/api/runs':
+            if self.path not in ('/api/runs', '/api/profile', '/api/profile/import', '/api/resumes/regenerate', '/api/resumes/approve'):
                 self.reply(404, {'error': 'Not found'})
                 return
             try:
                 length = int(self.headers.get('Content-Length', '0'))
-                if not 0 < length <= 16384:
-                    raise ValueError('Request must be 1–16,384 bytes')
-                body = json.loads(self.rfile.read(length))
+                maximum = 2_000_000 if self.path.startswith('/api/profile') else 16384
+                if not 0 < length <= maximum:
+                    raise ValueError(f'Request must be 1–{maximum} bytes')
+                raw = self.rfile.read(length)
+                if self.path == '/api/profile/import':
+                    from .profile_import import import_docx
+                    self.reply(200, import_docx(raw))
+                    return
+                body = json.loads(raw)
                 if not isinstance(body, dict):
                     raise ValueError('Expected a JSON object')
-                self.reply(202, {'run_id': service.start(body)})
+                if self.path == '/api/resumes/approve':
+                    sequence=body.get('queue_order')
+                    artifact_id=body.get('artifact_id')
+                    if type(sequence) is not int or not isinstance(artifact_id,str):
+                        raise ValueError('Select the exact resume to review')
+                    from .resume_review import approve
+                    self.reply(200, approve(service,sequence,artifact_id))
+                elif self.path == '/api/resumes/regenerate':
+                    sequence = body.get('queue_order')
+                    if type(sequence) is not int or sequence < 1:
+                        raise ValueError('Choose a valid resume queue order')
+                    from .resume_regeneration import enqueue
+                    self.reply(202, {'request_id':enqueue(service, sequence)})
+                elif self.path == '/api/profile':
+                    self.reply(200, service.save_profile(body))
+                else:
+                    self.reply(202, {'run_id': service.start(body)})
+            except OSError:
+                self.reply(500, {'error': 'Could not save profile. Check local storage permissions.'})
             except (ValueError, TypeError) as exc:
                 self.reply(400, {'error': str(exc)})
     return Handler
@@ -235,6 +330,7 @@ def make_handler(service):
 def main():
     parser = argparse.ArgumentParser(description='Local job discovery dashboard')
     parser.add_argument('--database', default='data/agent.db')
+    parser.add_argument('--profile', help='Profile save path; default: profile.json beside the database')
     parser.add_argument('--port', default=8765, type=int)
     parser.add_argument('--sources-file', help='JSON array of default company-board and market-search sources')
     args = parser.parse_args()
@@ -244,7 +340,7 @@ def main():
     defaults = json.loads(Path(args.sources_file).read_text(encoding='utf-8')) if args.sources_file else []
     if defaults:
         defaults = validate_sources(defaults)
-    service = Service(args.database, default_sources=defaults)
+    service = Service(args.database, default_sources=defaults, profile_path=args.profile)
     server = ThreadingHTTPServer(('127.0.0.1', args.port), make_handler(service))
     print(f'Job dashboard: http://127.0.0.1:{args.port}', flush=True)
     try:

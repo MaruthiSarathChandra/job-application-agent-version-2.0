@@ -14,7 +14,8 @@ from urllib.parse import urlsplit
 import uuid
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
-TEMPLATE_VERSION = 'times-new-roman-v1'
+TEMPLATE_VERSION = 'compact-reference-v2'
+SECTION_LABELS = {'Summary':'SUMMARY', 'Skills':'TECHNICAL SKILLS', 'Experience':'PROFESSIONAL EXPERIENCE', 'Projects':'SELECTED ENGINEERING PROJECTS', 'Education':'EDUCATION'}
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS resume_artifacts(
  id TEXT PRIMARY KEY, path TEXT NOT NULL, sha256 TEXT NOT NULL,
@@ -51,7 +52,12 @@ def validate_header(header):
         url = urlsplit(link['url'])
         if url.scheme not in ('https', 'http') or not url.hostname or url.username or url.password:
             raise ValueError('Resume links must be HTTP(S) URLs without credentials')
-    return {'display_name': header['display_name'], 'contact_lines': contacts, 'links': links}
+    result = {'display_name': header['display_name'], 'contact_lines': contacts, 'links': links}
+    if 'headline' in header:
+        if not isinstance(header['headline'], str) or len(header['headline']) > 300:
+            raise ValueError('Resume headline must be text up to 300 characters')
+        result['headline'] = header['headline']
+    return result
 
 
 def dependency_check():
@@ -71,9 +77,15 @@ def add_link(paragraph, text, url):
     run = OxmlElement('w:r')
     properties = OxmlElement('w:rPr')
     font = OxmlElement('w:rFonts')
-    font.set(qn('w:ascii'), 'Times New Roman')
-    font.set(qn('w:hAnsi'), 'Times New Roman')
+    font.set(qn('w:ascii'), 'Calibri')
+    font.set(qn('w:hAnsi'), 'Calibri')
     properties.append(font)
+    color = OxmlElement('w:color')
+    color.set(qn('w:val'), '203E60')
+    properties.append(color)
+    underline = OxmlElement('w:u')
+    underline.set(qn('w:val'), 'single')
+    properties.append(underline)
     run.append(properties)
     value = OxmlElement('w:t')
     value.text = text
@@ -105,63 +117,132 @@ def canonical_zip(raw):
     return output.getvalue()
 
 
+def fact_blocks(fact, section):
+    if fact.get('layout'):
+        from .profile_import import validate_layout
+        validate_layout(fact)
+        return fact['layout']
+    # Legacy entries keep their text intact; import supplies role/bullet structure.
+    return [{'text':fact['text'], 'kind':'bullet' if section in ('Experience','Projects') else 'body'}]
+
+
+def ordered_sections(draft):
+    return sorted(draft['sections'], key=lambda s:list(SECTION_LABELS).index(s['title']))
+
+
+def add_block_text(paragraph, block, bold_prefix=False):
+    text = block['text']
+    # Links from imported DOCX retain their displayed labels and original targets.
+    start = 0
+    for link in block.get('links', []):
+        index = text.find(link['label'], start)
+        if index < 0:
+            raise ValueError('Imported hyperlink label is missing')
+        add_fact(paragraph, text[start:index])
+        add_link(paragraph, link['label'], link['url'])
+        start = index + len(link['label'])
+    if bold_prefix and not block.get('links') and ':' in text:
+        label, remainder = text.split(':', 1)
+        paragraph.add_run(label+':').bold = True
+        add_fact(paragraph, remainder)
+    else:
+        add_fact(paragraph, text[start:])
+
+
 def render_docx(draft, header):
     dependency_check()
     from docx import Document
     from docx.shared import Inches, Pt, RGBColor
-    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
+    from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
     header = validate_header(header)
     sections = draft.get('sections', [])
     if not sections or not any(section.get('facts') for section in sections):
         raise ValueError('Cannot render an empty resume')
     texts = [fact['text'] for section in sections for fact in section['facts']]
-    if sum(len(text.split()) for text in texts)>650:
-        raise ValueError('Selected facts exceed the 650-word resume budget; shorten verified facts or select fewer')
+    if sum(len(text.split()) for text in texts)>2500:
+        raise ValueError('Selected facts exceed the 2,500-word resume budget; select fewer entries')
     document = Document()
     page = document.sections[0]
     page.page_width, page.page_height = Inches(8.5), Inches(11)
-    page.top_margin = page.bottom_margin = Inches(0.55)
-    page.left_margin = page.right_margin = Inches(0.65)
+    page.top_margin = page.bottom_margin = Inches(0.45)
+    page.left_margin = page.right_margin = Inches(0.5)
     for name in ('Normal', 'Title', 'Heading 1', 'List Bullet'):
         style = document.styles[name]
-        style.font.name = 'Times New Roman'
+        style.font.name = 'Calibri'
         fonts=style.element.get_or_add_rPr().rFonts
         for attribute in list(fonts.attrib):
             if 'theme' in attribute.lower():
                 del fonts.attrib[attribute]
         for script in ('ascii','hAnsi','eastAsia','cs'):
-            fonts.set(qn('w:'+script),'Times New Roman')
+            fonts.set(qn('w:'+script),'Calibri')
         for border in list(style.element.iter(qn('w:pBdr'))):
             border.getparent().remove(border)
-        style.font.size = Pt(11)
+        style.font.size = Pt(8)
         style.font.color.rgb = RGBColor(0,0,0)
-        style.paragraph_format.space_after = Pt(4)
+        style.paragraph_format.space_after = Pt(0.45)
+        style.paragraph_format.space_before = Pt(0)
         style.paragraph_format.line_spacing = 1.0
     document.styles['Heading 1'].font.bold = True
-    document.styles['Heading 1'].font.size = Pt(11)
-    document.styles['Heading 1'].paragraph_format.space_before = Pt(8)
+    document.styles['Heading 1'].font.size = Pt(10)
+    document.styles['Heading 1'].font.color.rgb = RGBColor.from_string('203E60')
+    document.styles['Heading 1'].paragraph_format.space_before = Pt(3)
+    document.styles['Heading 1'].paragraph_format.space_after = Pt(1.7)
     title = document.add_paragraph(style='Title')
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
     title.add_run(header['display_name']).bold = True
-    title.runs[0].font.size = Pt(17)
-    for line in header['contact_lines']:
-        paragraph = document.add_paragraph(line)
-        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        paragraph.paragraph_format.space_after = Pt(2)
-    if header['links']:
+    title.runs[0].font.size = Pt(23)
+    title.paragraph_format.keep_with_next = True
+    if header.get('headline'):
         paragraph = document.add_paragraph()
         paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = paragraph.add_run(header['headline'])
+        run.bold = True
+        run.font.size = Pt(10)
+        paragraph.paragraph_format.keep_with_next = True
+    if header['contact_lines'] or header['links']:
+        paragraph = document.add_paragraph()
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        paragraph.add_run(' | '.join(header['contact_lines']))
         for index, link in enumerate(header['links']):
-            if index:
+            if index or header['contact_lines']:
                 paragraph.add_run(' | ')
             add_link(paragraph, link['label'], link['url'])
-    for section in sections:
-        document.add_paragraph(section['title'], style='Heading 1')
+        paragraph.paragraph_format.keep_with_next = True
+    for section in ordered_sections(draft):
+        paragraph = document.add_paragraph(SECTION_LABELS[section['title']], style='Heading 1')
+        border = OxmlElement('w:pBdr')
+        bottom = OxmlElement('w:bottom')
+        for name,value in (('val','single'),('sz','8'),('color','203E60'),('space','1')):
+            bottom.set(qn('w:'+name),value)
+        border.append(bottom)
+        paragraph._p.get_or_add_pPr().append(border)
         for fact in section['facts']:
-            paragraph = document.add_paragraph(style='List Bullet' if section['title'] in ('Experience','Projects') else 'Normal')
-            paragraph.paragraph_format.keep_together = True
-            add_fact(paragraph, fact['text'])
+            blocks = fact_blocks(fact, section['title'])
+            for index,block in enumerate(blocks):
+                kind = block['kind']
+                paragraph = document.add_paragraph(style='List Bullet' if kind=='bullet' else 'Normal')
+                paragraph.paragraph_format.keep_together = True
+                paragraph.paragraph_format.keep_with_next = kind in ('heading','metadata') and index < len(blocks)-1
+                paragraph.paragraph_format.tab_stops.add_tab_stop(Inches(7.35), WD_TAB_ALIGNMENT.RIGHT)
+                if kind == 'bullet':
+                    paragraph.paragraph_format.left_indent = Inches(0.18)
+                    paragraph.paragraph_format.first_line_indent = Inches(-0.12)
+                if kind == 'body':
+                    paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+                add_block_text(paragraph, block, section['title']=='Skills')
+                for run in paragraph.runs:
+                    if kind=='heading':
+                        run.bold=True
+                        run.font.size=Pt(9)
+                        if section['title']=='Projects':
+                            run.font.color.rgb=RGBColor.from_string('203E60')
+                    elif kind=='metadata':
+                        run.italic=True
+                        run.font.color.rgb=RGBColor.from_string('666666')
+                    elif section['title']=='Summary':
+                        run.font.size=Pt(9)
     metadata = document.core_properties
     metadata.author = ''
     metadata.last_modified_by = ''
@@ -181,12 +262,30 @@ def validate_docx(raw, draft, header):
         if archive.testzip() is not None:
             raise ValueError('DOCX archive integrity check failed')
         root = ET.fromstring(archive.read('word/document.xml'))
-        paragraphs = [''.join(t.text or '' for t in p.iter('{'+ns['w']+'}t')) for p in root.findall('.//w:p', ns)]
-        expected = [header['display_name'], *header['contact_lines']]
-        if header['links']:
-            expected.append(' | '.join(link['label'] for link in header['links']))
-        for section in draft['sections']:
-            expected.extend([section['title'], *[f['text'] for f in section['facts']]])
+        # Word stores line breaks and tabs as elements rather than w:t text.
+        # Include them when reconstructing content, including hyperlink runs.
+        def paragraph_text(paragraph):
+            parts = []
+            for element in (child for run in paragraph.iter('{'+ns['w']+'}r') for child in run):
+                if element.tag == '{'+ns['w']+'}t':
+                    parts.append(element.text or '')
+                elif element.tag in ('{'+ns['w']+'}br', '{'+ns['w']+'}cr'):
+                    parts.append('\n')
+                elif element.tag == '{'+ns['w']+'}tab':
+                    parts.append('\t')
+            return ''.join(parts)
+        paragraphs = [paragraph_text(p) for p in root.findall('.//w:p', ns)]
+        expected = [header['display_name']]
+        if header.get('headline'):
+            expected.append(header['headline'])
+        if header['contact_lines'] or header['links']:
+            expected.append(' | '.join([*header['contact_lines'], *[link['label'] for link in header['links']]]))
+        for section in ordered_sections(draft):
+            expected.append(SECTION_LABELS[section['title']])
+            for fact in section['facts']:
+                expected.extend(block['text'] for block in fact_blocks(fact, section['title']))
+        # python-docx maps each carriage return to a Word line break.
+        expected = [text.replace('\r', '\n') for text in expected]
         if paragraphs != expected:
             raise ValueError('Rendered resume does not exactly preserve selected facts and header')
         rels = ET.fromstring(archive.read('word/_rels/document.xml.rels'))
@@ -194,6 +293,8 @@ def validate_docx(raw, draft, header):
         expected_urls={link['url'] for link in header['links']}
         for section in draft['sections']:
             for fact in section['facts']:
+                for block in fact.get('layout', []):
+                    expected_urls.update(link['url'] for link in block.get('links', []))
                 expected_urls.update(match.group().rstrip('.,;)]}') for match in re.finditer(r'https?://[^\s<>]+',fact['text']))
         if set(external)!=expected_urls:
             raise ValueError('Rendered resume link targets differ from verified facts/header')
@@ -201,13 +302,13 @@ def validate_docx(raw, draft, header):
         for style_id in ('Normal','Title','Heading1','ListBullet'):
             style=next(x for x in styles.findall('w:style',ns) if x.attrib.get('{'+ns['w']+'}styleId')==style_id)
             fonts=style.find('w:rPr/w:rFonts',ns)
-            if fonts is None or fonts.attrib.get('{'+ns['w']+'}ascii')!='Times New Roman' or any('theme' in key.lower() for key in fonts.attrib):
+            if fonts is None or fonts.attrib.get('{'+ns['w']+'}ascii')!='Calibri' or any('theme' in key.lower() for key in fonts.attrib):
                 raise ValueError('Resume typography validation failed')
             if style.find('w:pPr/w:pBdr',ns) is not None:
                 raise ValueError('Resume title/heading has an unexpected border')
     return {'status':'passed', 'scope':'docx_structure_exact_text_and_header_links',
             'page_count_verified':False, 'template_version':TEMPLATE_VERSION,
-            'checks':['zip_integrity','exact_fact_text','header_text','all_link_targets','times_new_roman','no_title_borders']}
+            'checks':['zip_integrity','exact_fact_text','header_text','all_link_targets','calibri_reference_layout','no_title_borders']}
 
 
 def save_artifact(draft, header, directory):
@@ -284,17 +385,21 @@ class Packager:
             if task['profile_version']!=self.version:
                 raise ValueError('Draft profile version differs from this worker profile; use the original verified profile')
             draft=json.loads(task['result'])
-            facts={f['id']:f for f in self.profile['facts']}
-            for section in draft['sections']:
-                for fact in section['facts']:
-                    if fact['id'] not in facts or facts[fact['id']]!=fact or fact['section']!=section['title']:
-                        raise ValueError('Draft facts differ from the verified profile')
+            if draft.get('writer_version'):
+                from .resume_writer import validate_draft
+                validate_draft(draft, self.profile)
+            else:
+                facts={f['id']:f for f in self.profile['facts']}
+                for section in draft['sections']:
+                    for fact in section['facts']:
+                        if fact['id'] not in facts or facts[fact['id']]!=fact or fact['section']!=section['title']:
+                            raise ValueError('Draft facts differ from the verified profile')
             artifact=save_artifact(draft,self.profile.get('_resume_header'),self.artifact_dir)
             event={'schema_version':1,'event_id':str(uuid.uuid4()),'correlation_id':draft.get('correlation_id',task['job_id']),
                    'job_id':task['job_id'],'profile_version':self.version,'job':json.loads(task['snapshot']),
                    'resume':{k:v for k,v in artifact.items() if k!='path'},
                    'unsupported_requirements':draft['missing_requirements'],'eligibility_status':'not_assessed',
-                   'status':'ready_for_application'}
+                   'status':'review_required' if draft.get('requires_review') else 'ready_for_application'}
             with self.connect() as db:
                 db.execute('BEGIN IMMEDIATE')
                 changed=db.execute("UPDATE render_tasks SET status='completed',worker_token=NULL,lease_until=NULL,last_error=NULL WHERE queue_order=? AND worker_token=?",(task['queue_order'],task['worker_token']))
@@ -302,14 +407,15 @@ class Packager:
                     raise ValueError('Render lease lost; stale artifact result discarded')
                 db.execute('INSERT OR IGNORE INTO resume_artifacts(id,path,sha256,profile_version,template_version,validation) VALUES(?,?,?,?,?,?)',
                            (artifact['artifact_id'],artifact['path'],artifact['sha256'],self.version,TEMPLATE_VERSION,json.dumps(artifact['validation'])))
-                cursor=db.execute('INSERT INTO application_queue(job_id,resume_artifact_id,payload) VALUES(?,?,?)',
-                                  (task['job_id'],artifact['artifact_id'],json.dumps(event)))
+                cursor=db.execute('INSERT INTO application_queue(job_id,resume_artifact_id,payload,status) VALUES(?,?,?,?)',
+                                  (task['job_id'],artifact['artifact_id'],json.dumps(event),event['status']))
                 event['application_queue_order']=cursor.lastrowid
                 db.execute('UPDATE application_queue SET payload=? WHERE sequence=?',(json.dumps(event),cursor.lastrowid))
-                db.execute('INSERT INTO outbox(event_key,topic,payload) VALUES(?,?,?)',('applications.ready:'+task['job_id'],'applications.ready.v1',json.dumps(event)))
+                if not draft.get('requires_review'):
+                    db.execute('INSERT INTO outbox(event_key,topic,payload) VALUES(?,?,?)',('applications.ready:'+task['job_id'],'applications.ready.v1',json.dumps(event)))
                 db.execute('INSERT INTO consumer_receipts(consumer,event_key) VALUES(?,?)',('resume-packager-v1',task['event_key']))
                 db.execute("UPDATE resume_queue SET status='resume_ready' WHERE sequence=?",(task['queue_order'],))
-                db.execute('INSERT INTO activity(run_id,kind,message) VALUES(?,?,?)',(task['run_id'],'resume_ready',f"#{task['queue_order']}: DOCX checked; queued for Agent 3 (not started)"))
+                db.execute('INSERT INTO activity(run_id,kind,message) VALUES(?,?,?)',(task['run_id'],'resume_ready',f"#{task['queue_order']}: DOCX checked; see resume review status"))
         except Exception as exc:
             message=str(exc) if isinstance(exc,ValueError) else 'DOCX packaging failed; no application-ready event published'
             with self.connect() as db:

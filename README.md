@@ -81,16 +81,18 @@ python -m agent.resume_worker --profile data/profile.json --watch --limit 10
 
 The limit is a task-attempt budget, not a successful-draft count. Without --watch, the worker exits if no eligible tasks are available. With --watch, it waits until the task budget is used or you press Ctrl+C.
 
-The independent worker consumes queued `resume.requested.v1` events, leases one task at a time, calls GPT through the OpenAI Responses API, validates returned fact IDs, and atomically records a draft, acknowledgement, and `resume.drafted.v1` event. The dashboard's **GPT drafts** tab shows the selection. Agent 2 then renders the DOCX and publishes it to the **Agent 3 queue** tab. Failures are visible, backed off, and retried at most three times. Expired leases can be recovered by another worker. If a process crashes after an API response but before saving, the API call may be repeated and billed again; only the local result/acknowledgement is deduplicated.
+The independent worker consumes queued `resume.requested.v1` events, leases one task at a time, calls GPT through the Responses API, validates the returned writing and source references, and persists a `resume.drafted.v1` checkpoint. DOCX packaging does not repeat that API call. New written resumes are held as **Review required**, with no `applications.ready.v1` event until the user approves the exact artifact in **View resume**. Older fact-selection drafts remain readable for compatibility.
 
-GPT selects/orders verified facts and reports unsupported job requirements. Agent 2 renders the exact supplied fact text into a Times New Roman DOCX with bold headings and configured links. There is no generated prose rewriting or PDF output yet. Runtime checks are structural/content checks; page count and candidate-specific visual layout are not automatically verified. No account creation or application submission is enabled. Keys never belong in the browser, Git, screenshots, or activity logs.
+GPT writes a summary and 2–5 bullets per selected experience/project entry. The response schema restricts source IDs to the saved profile. Validation rejects unknown/duplicate entries, new numbers absent from cited sources, unsupported skill names, omitted employment, and omission of every project when projects exist. Education and structured heading/date/link data are copied locally. These checks do not prove semantic truth: reviewing the generated claims remains mandatory. No account creation or application submission is enabled.
+
+Failures remain visible. If a process crashes after an API response but before saving, an API call may be repeated and billed again; local acknowledgements do not guarantee exactly-once billing.
 
 The browser and worker communicate through the local durable outbox/queue, not this ChatGPT conversation. A Kafka relay can later replace the transport behind this event contract. The profile hash is saved with every draft; only verified facts are sent to the model, not arbitrary profile/contact fields.
 
 
 ## Agent 2 artifact handoff
 
-Agent 2 now includes two durable internal steps: GPT fact selection and DOCX packaging. A persisted draft is a checkpoint; packaging retries do not call GPT again. On success, the worker publishes `applications.ready.v1` with the full job snapshot, local resume URI, file SHA-256, profile version, event/correlation IDs, and structural validation report. The application queue is separate from the discovery/resume queue. Agent 3 is not running and no application is submitted.
+Agent 2 now includes two durable internal steps: grounded GPT writing and DOCX packaging. A persisted draft is a checkpoint; packaging retries do not call GPT again. After successful packaging and user approval, the system publishes `applications.ready.v1` with the full job snapshot, local resume URI, file SHA-256, profile version, event/correlation IDs, and structural validation report. The application queue is separate from the discovery/resume queue. Agent 3 is not running and no application is submitted.
 
 Start Agent 2 after configuring the verified profile and API environment:
 
@@ -109,7 +111,7 @@ The resume header is kept local; only professional facts are sent to GPT. The pr
 
 DOCX artifacts default to `artifacts/resumes`, configurable with `--artifact-dir`. This is a local-storage adapter: agents on this machine share the same database and artifact directory. For different hosts, replace it with shared artifact storage; `local://` is a logical locator, not a web-accessible URL. The dashboard offers checked DOCX downloads by artifact ID and rejects downloads if the stored checksum fails.
 
-The built-in template uses Letter paper, Times New Roman 11-point body text, a 17-point centered name, bold section headings, and clickable verified links. A 650-word content budget prevents unbounded output; it does not prove a one-page layout. A representative one-page fixture was rendered and visually inspected during development. Runtime validation checks ZIP integrity, exact facts/header text, all link targets, and typography; `page_count_verified` remains false in the outgoing message.
+The built-in template uses Letter paper, Calibri 8-point body text, a 23-point centered name, bold section headings, and clickable verified links. A 2,500-word content budget prevents unbounded output; it does not prove a one-page layout. A representative one-page fixture was rendered and visually inspected during development. Runtime validation checks ZIP integrity, exact validated draft/header text, all link targets, and typography; `page_count_verified` remains false in the outgoing message.
 
 Missing credentials/profile/header or dependencies stop before model use. Worker errors and render errors are recorded separately. A rendering failure, profile mismatch, changed fact, or failed outgoing-event transaction never creates an application-ready queue entry. Files are atomically saved under content hashes before the outgoing DB transaction. Failed transactions can leave harmless unreferenced files, reserved for future garbage collection.
 
@@ -126,3 +128,120 @@ Message fields:
 | resume.sha256 | File fingerprint used to detect changes |
 
 `ready_for_application` means the artifact is available for Agent 3 to inspect and begin its workflow. It does not mean legal/work-authorization eligibility has been assessed, missing requirements have been waived, or submission has been authorized by a new policy. Those decisions remain in the later application module.
+
+### Create your profile in the browser
+
+Start the dashboard with `python -m agent.dashboard`, then choose **Resume profile**
+or open http://127.0.0.1:8765/profile. Enter your name, contact details, professional
+links, and separate resume entries. Review the accuracy checkbox and click **Save
+profile**. You can return to this page to edit your saved details; no JSON editing
+is needed.
+
+The default dashboard saves to `data/profile.json`, which is excluded from Git.
+Run Agent 2 with `python -m agent.resume_worker --profile data/profile.json --limit 1`
+in the terminal with your API key and model configured. Restart an already-running
+worker after profile edits: it keeps the profile version loaded at startup.
+Existing generated resumes are not regenerated automatically.
+
+For a custom database location, the profile defaults to `profile.json` beside the
+database. Override the dashboard save path with `--profile`, and give the worker
+that same path. This form currently edits one local profile.
+
+### Import your standard resume and preview its layout
+
+On **Resume profile**, choose your existing paragraph-based DOCX (up to 2 MB)
+and click **Import DOCX for review**. Import fills the form without saving,
+verifying claims, or calling GPT. Review the entries, headline, dates, section
+assignments, and links; confirm accuracy and save.
+
+Imported experience and project entries retain their heading, metadata, bullets,
+and hyperlink targets as a single selectable group. When editing an imported
+entry, keep its paragraph count; to restructure it, remove it and add a fresh
+entry. Import currently recognizes Summary, Technical Skills, Professional
+Experience, Selected Engineering Projects, Education, and their common short
+headings. Tables are rejected rather than silently skipped.
+
+**Download saved profile resume** produces a full-profile DOCX with no model
+call and no application-queue event. The compact reference template uses Calibri,
+a centered name/headline/contact block, blue uppercase section headings and rules,
+bold role/project headings, bullets, and right-aligned tabbed dates/links.
+It supports multiple pages (2,500-word limit); page count is not enforced at runtime.
+The preview includes every saved entry; job-tailored Agent 2 output rewrites relevant
+experience/project groups from that same profile, with a review gate. Existing drafts and generated resumes retain their
+original profile version and are not overwritten by an import.
+
+### Regenerate and view an existing resume
+
+Each completed resume now has **View resume**, **Download checked DOCX**, and
+**Regenerate resume** actions in the pipeline. View opens an escaped HTML reading
+preview of the actual stored DOCX inside the dashboard; Word pagination and exact
+spacing can differ.
+
+Save/import your full profile first. Regenerate queues a fresh GPT writing request using
+a snapshot of that saved profile and the job's original JD. Keep Agent 2 running:
+
+```powershell
+python -m agent.resume_worker --profile data/profile.json --watch --limit 10
+```
+
+The limit covers all worker tasks, including ordinary queued jobs; generation uses
+your configured API key/model and incurs API usage. Render-only mode does not
+process regeneration requests. The dashboard shows queued/processing/completed
+or failure states. Repeated clicks cannot enqueue concurrent replacements for the
+same resume. Failed replacements retain the previous artifact, and successful
+ones archive its draft, application payload, and unpublished ready event in
+`resume_revision_history`. Old artifact downloads remain available.
+
+Replacement is supported only before downstream handoff. An already published
+application-ready event is rejected. The current local outbox is replaced
+atomically with the revised artifact; a future broker relay must coordinate with
+application_queue.status and exclude regenerating applications before publication.
+
+### First controlled writer run
+
+Stop older workers and keep the dashboard on the same database. The two already
+queued regeneration requests do not need another button click. Process only one:
+
+```powershell
+python -m agent.resume_worker --profile data/profile.json --limit 1
+```
+
+Open **Resume queue → View resume**, compare the draft against **View draft and
+source evidence**, then approve only if the claims are accurate. The Agent 3 tab
+shows approved entries only. Approval checks the exact artifact ID and checksum
+so a stale preview cannot approve a newer revision.
+
+Offline validation covers profile → writer response validation → DOCX → HTML
+preview → approval → application-ready event and regeneration. It uses fixed
+model-response fixtures, not a live model evaluation. Live quality still requires
+one controlled API call with the user's profile and JD.
+
+### Resume generation checkpoints and bullet errors
+
+Agent 2 now uses one consistent 1–5 bullet contract. A short source can produce one
+supported bullet instead of padding the resume. Errors identify the entry/source
+and actual bullet count. Saved v1 drafts remain readable.
+
+Completed JSON responses are saved locally **before validation**. Both initial and
+replacement processing reuse the saved response when the same request is retried;
+a validation failure does not cause another model call for that request. Clicking
+Regenerate creates a new request and may incur a new API charge.
+
+Inspect saved responses without credentials or a running worker:
+
+```powershell
+python -m agent.resume_checkpoint --database data/agent.db
+python -m agent.resume_checkpoint --database data/agent.db --id <checkpoint-id>
+```
+
+The second command reports entry bullet counts and runs current validation against
+the saved evidence. It does not change queues, approve a resume or call GPT.
+`--status` and `/api/diagnostics` also include recent checkpoint metadata.
+Failures from versions before checkpoint storage cannot be replayed.
+
+After pulling the bundled update, restart the dashboard and worker. Review the
+saved profile first. For an old failed regeneration, create one new regeneration
+request and process one task; inspect any checkpoint error before requesting more.
+Structural checks are not a guarantee of factual truth: compare rewritten claims
+with their cited evidence and approve the exact resume before downstream use.
+See `docs/architecture.md` for implemented boundaries and remaining work.
