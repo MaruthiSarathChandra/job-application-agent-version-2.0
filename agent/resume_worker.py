@@ -47,6 +47,9 @@ def load_profile(path):
     # Send only verified professional facts, not contact data or other profile keys.
     safe = {'profile_id': profile['profile_id'], 'facts': [
         {k: fact[k] for k in ('id', 'section', 'text')} for fact in facts]}
+    if profile.get('resume_header') is not None:
+        from .resume_artifact import validate_header
+        safe['_resume_header'] = validate_header(profile['resume_header'])
     version = hashlib.sha256(json.dumps(safe, sort_keys=True).encode()).hexdigest()
     return safe, version
 
@@ -66,7 +69,7 @@ def build_request(job, profile, model):
             'List job requirements unsupported by the supplied facts as missing_requirements. '
             'Return only the schema. You have no tools or permission to submit applications.',
         'input': json.dumps({'job': {k: job.get(k) for k in ('title', 'company', 'description', 'url')},
-                             'verified_profile': profile}),
+                             'verified_profile': {k:profile[k] for k in ('profile_id','facts')}}),
         'text': {'format': {'type': 'json_schema', 'name': 'resume_fact_selection',
                             'strict': True, 'schema': schema}}}
 
@@ -183,7 +186,8 @@ class Worker:
             selection = self.generator(event['job'], self.profile, self.model)
             draft = validate_result(selection, self.profile)
             draft.update(job_id=task['job_id'], queue_order=task['sequence'], profile_version=self.version,
-                         model=self.model, schema_version=1)
+                         model=self.model, schema_version=1, event_id=str(uuid.uuid4()),
+                         correlation_id=event.get('correlation_id', task['job_id']))
             with self.connect() as db:
                 db.execute('BEGIN IMMEDIATE')
                 updated = db.execute("UPDATE resume_queue SET status='resume_draft_ready',worker_token=NULL,lease_until=NULL,last_error=NULL "
@@ -216,19 +220,29 @@ def main():
     parser.add_argument('--profile', required=True, help='Local verified profile JSON; never commit private profile files')
     parser.add_argument('--model', default=os.getenv('OPENAI_MODEL'))
     parser.add_argument('--limit', type=int, default=1, help='Maximum tasks processed per invocation')
+    parser.add_argument('--artifact-dir', default='artifacts/resumes')
+    parser.add_argument('--render-only', action='store_true', help='Package saved drafts without any model calls')
     parser.add_argument('--watch', action='store_true', help='Poll continuously; limit is the total task budget')
     args = parser.parse_args()
     try:
-        if not os.getenv('OPENAI_API_KEY') or not args.model:
+        if not args.render_only and (not os.getenv('OPENAI_API_KEY') or not args.model):
             raise ValueError('Set OPENAI_API_KEY and OPENAI_MODEL, or pass --model')
         if not 1 <= args.limit <= 100:
             raise ValueError('Task limit must be 1–100')
         profile, version = load_profile(args.profile)
         Path(args.database).parent.mkdir(parents=True, exist_ok=True)
+        from .resume_artifact import Packager, validate_header, dependency_check
+        validate_header(profile.get('_resume_header'))
+        dependency_check()
         worker = Worker(args.database, profile, version, args.model)
+        packager = Packager(args.database, profile, version, args.artifact_dir)
         count = 0
         while count < args.limit:
-            if worker.process_one():
+            if packager.process_one():
+                count += 1
+                print(f'Packaged task {count}/{args.limit}; see application queue', flush=True)
+            elif not args.render_only and worker.process_one():
+                packager.process_one()
                 count += 1
                 print(f'Processed task {count}/{args.limit}; see dashboard for result', flush=True)
             elif args.watch:

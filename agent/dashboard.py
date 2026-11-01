@@ -122,7 +122,7 @@ class Service:
                                                     (result['job_id'], run_id, json.dumps(result)))
                                 if cursor.rowcount:
                                     number = cursor.lastrowid
-                                    payload = {'schema_version': 1, 'queue_order': number, 'job_id': result['job_id'],
+                                    payload = {'schema_version': 1, 'event_id': str(uuid.uuid4()), 'correlation_id': result['job_id'], 'queue_order': number, 'job_id': result['job_id'],
                                                'job': result, 'status': 'resume_waiting'}
                                     db.execute('INSERT INTO outbox(event_key,topic,payload) VALUES(?,?,?)',
                                                ('resume.requested:' + result['job_id'], 'resume.requested.v1', json.dumps(payload)))
@@ -154,6 +154,7 @@ class Service:
         with self.connect() as db:
             return {
                 'sources': source_catalog(),
+                'applications': [dict(x) for x in db.execute('SELECT sequence,job_id,resume_artifact_id,status,payload FROM application_queue ORDER BY sequence')] if db.execute("SELECT 1 FROM sqlite_master WHERE name='application_queue'").fetchone() else [],
                 'default_sources': self.default_sources,
                 'drafts': [dict(x) for x in db.execute('SELECT queue_order,profile_version,result,created_at FROM resume_drafts ORDER BY queue_order')] if db.execute("SELECT 1 FROM sqlite_master WHERE name='resume_drafts'").fetchone() else [],
                 'runs': [dict(x) for x in db.execute('SELECT * FROM discovery_runs ORDER BY created_at DESC,rowid DESC LIMIT 20')],
@@ -165,22 +166,48 @@ class Service:
 
 def make_handler(service):
     class Handler(BaseHTTPRequestHandler):
-        def reply(self, status, value, content_type='application/json'):
-            payload = value.encode() if isinstance(value, str) else json.dumps(value).encode()
+        def reply(self, status, value, content_type='application/json', headers=None):
+            payload = value if isinstance(value,bytes) else value.encode() if isinstance(value,str) else json.dumps(value).encode()
             self.send_response(status)
             self.send_header('Content-Type', content_type + '; charset=utf-8')
             self.send_header('Cache-Control', 'no-store')
             self.send_header('X-Content-Type-Options', 'nosniff')
+            self.send_header('Content-Length',str(len(payload)))
+            for key,value in (headers or {}).items():
+                self.send_header(key,value)
             self.end_headers()
             self.wfile.write(payload)
 
         def do_GET(self):
             if self.path == '/':
                 self.reply(200, Path(__file__).with_name('web').joinpath('index.html').read_text(encoding='utf-8'), 'text/html')
+            elif re.fullmatch(r'/api/artifacts/[a-f0-9]{64}',self.path):
+                self.download_artifact(self.path.rsplit('/',1)[1])
             elif self.path == '/api/state':
                 self.reply(200, service.snapshot())
             else:
                 self.reply(404, {'error': 'Not found'})
+
+        def download_artifact(self, identifier):
+            import hashlib
+            with service.connect() as db:
+                if not db.execute("SELECT 1 FROM sqlite_master WHERE name='resume_artifacts'").fetchone():
+                    self.reply(404, {'error':'No resume artifact'})
+                    return
+                row=db.execute('SELECT path,sha256 FROM resume_artifacts WHERE id=?',(identifier,)).fetchone()
+            if not row:
+                self.reply(404, {'error':'No resume artifact'})
+                return
+            try:
+                data=Path(row['path']).read_bytes()
+            except OSError:
+                self.reply(404, {'error':'Resume artifact is unavailable in configured local storage'})
+                return
+            if hashlib.sha256(data).hexdigest()!=row['sha256']:
+                self.reply(409, {'error':'Resume artifact checksum failed'})
+                return
+            self.reply(200,data,'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                       {'Content-Disposition':f'attachment; filename="resume-{identifier[:12]}.docx"'})
 
         def do_POST(self):
             # No cross-origin writes to the local agent.

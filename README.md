@@ -1,6 +1,6 @@
 # Job Application Agent 2.0
 
-Python 3.11+ modular application. Phase 1 provides a local HTML dashboard, public-board discovery, and durable intake. No third-party dependencies or API credentials required.
+Python 3.11+ modular application. Phase 1 provides a local HTML dashboard, public-board discovery, and durable intake. Discovery requires no third-party dependencies or API credentials. Agent 2 requires the DOCX dependency and, for GPT calls, local API configuration.
 
 ## Interactive dashboard
 
@@ -65,9 +65,9 @@ The included file contains only the Greenhouse demonstration board. Replace it w
 ### Start the second process
 
 1. Copy `examples/profile.template.json` to `data/profile.json`.
-2. Replace every placeholder with exact professional facts you have verified. Set `verified` to true for the profile and each fact only after review. Do not use the template as a real profile.
+2. Replace every placeholder, including resume_header (name, contact lines, and links), with exact professional facts you have verified. Set `verified` to true for the profile and each fact only after review. Do not use the template as a real profile.
 3. Configure `OPENAI_API_KEY` and `OPENAI_MODEL` in the worker's environment. The key is server-side only. Select a model your API account supports with Responses structured outputs. There is no assumed default model.
-4. In a second terminal, from the same repository folder and using the same database:
+4. Install Agent 2 dependencies with `python -m pip install -r requirements.txt`. In a second terminal, from the same repository folder and using the same database:
 
 ```powershell
 python -m agent.resume_worker --profile data/profile.json --limit 1
@@ -81,8 +81,48 @@ python -m agent.resume_worker --profile data/profile.json --watch --limit 10
 
 The limit is a task-attempt budget, not a successful-draft count. Without --watch, the worker exits if no eligible tasks are available. With --watch, it waits until the task budget is used or you press Ctrl+C.
 
-The independent worker consumes queued `resume.requested.v1` events, leases one task at a time, calls GPT through the OpenAI Responses API, validates returned fact IDs, and atomically records a draft, acknowledgement, and `resume.drafted.v1` event. The dashboard's **GPT drafts** tab shows the result. Failures are visible, backed off, and retried at most three times. Expired leases can be recovered by another worker. If a process crashes after an API response but before saving, the API call may be repeated and billed again; only the local result/acknowledgement is deduplicated.
+The independent worker consumes queued `resume.requested.v1` events, leases one task at a time, calls GPT through the OpenAI Responses API, validates returned fact IDs, and atomically records a draft, acknowledgement, and `resume.drafted.v1` event. The dashboard's **GPT drafts** tab shows the selection. Agent 2 then renders the DOCX and publishes it to the **Agent 3 queue** tab. Failures are visible, backed off, and retried at most three times. Expired leases can be recovered by another worker. If a process crashes after an API response but before saving, the API call may be repeated and billed again; only the local result/acknowledgement is deduplicated.
 
-This is the first stage-2 increment: GPT selects/orders verified facts and reports unsupported job requirements. The application renders the exact supplied fact text, preventing generated replacements of dates, titles, or experience claims. It is **not yet a finished tailored DOCX/PDF resume**; the approved format and document renderer are still needed. No account creation or application submission is enabled. Keys never belong in the browser, Git, screenshots, or activity logs.
+GPT selects/orders verified facts and reports unsupported job requirements. Agent 2 renders the exact supplied fact text into a Times New Roman DOCX with bold headings and configured links. There is no generated prose rewriting or PDF output yet. Runtime checks are structural/content checks; page count and candidate-specific visual layout are not automatically verified. No account creation or application submission is enabled. Keys never belong in the browser, Git, screenshots, or activity logs.
 
 The browser and worker communicate through the local durable outbox/queue, not this ChatGPT conversation. A Kafka relay can later replace the transport behind this event contract. The profile hash is saved with every draft; only verified facts are sent to the model, not arbitrary profile/contact fields.
+
+
+## Agent 2 artifact handoff
+
+Agent 2 now includes two durable internal steps: GPT fact selection and DOCX packaging. A persisted draft is a checkpoint; packaging retries do not call GPT again. On success, the worker publishes `applications.ready.v1` with the full job snapshot, local resume URI, file SHA-256, profile version, event/correlation IDs, and structural validation report. The application queue is separate from the discovery/resume queue. Agent 3 is not running and no application is submitted.
+
+Start Agent 2 after configuring the verified profile and API environment:
+
+```powershell
+python -m pip install -r requirements.txt
+python -m agent.resume_worker --profile data/profile.json --watch --limit 10
+```
+
+To package already-saved drafts without API calls (requires the same profile version that generated those drafts):
+
+```powershell
+python -m agent.resume_worker --profile data/profile.json --render-only --limit 10
+```
+
+The resume header is kept local; only professional facts are sent to GPT. The profile fingerprint includes header data so the saved artifact remains tied to the exact input version. Adding a header to an old headerless profile changes its version; older drafts cannot be silently rebound to the new profile.
+
+DOCX artifacts default to `artifacts/resumes`, configurable with `--artifact-dir`. This is a local-storage adapter: agents on this machine share the same database and artifact directory. For different hosts, replace it with shared artifact storage; `local://` is a logical locator, not a web-accessible URL. The dashboard offers checked DOCX downloads by artifact ID and rejects downloads if the stored checksum fails.
+
+The built-in template uses Letter paper, Times New Roman 11-point body text, a 17-point centered name, bold section headings, and clickable verified links. A 650-word content budget prevents unbounded output; it does not prove a one-page layout. A representative one-page fixture was rendered and visually inspected during development. Runtime validation checks ZIP integrity, exact facts/header text, all link targets, and typography; `page_count_verified` remains false in the outgoing message.
+
+Missing credentials/profile/header or dependencies stop before model use. Worker errors and render errors are recorded separately. A rendering failure, profile mismatch, changed fact, or failed outgoing-event transaction never creates an application-ready queue entry. Files are atomically saved under content hashes before the outgoing DB transaction. Failed transactions can leave harmless unreferenced files, reserved for future garbage collection.
+
+Message fields:
+
+| Field | Meaning |
+| --- | --- |
+| schema_version | Version of the JSON contract, not the model or candidate version |
+| event_id | Unique ID of this message |
+| correlation_id | Shared ID connecting one job workflow |
+| job_id | Stable identity of the job |
+| profile_version | Fingerprint of the verified candidate input |
+| resume.artifact_id | Identity of the stored resume file |
+| resume.sha256 | File fingerprint used to detect changes |
+
+`ready_for_application` means the artifact is available for Agent 3 to inspect and begin its workflow. It does not mean legal/work-authorization eligibility has been assessed, missing requirements have been waived, or submission has been authorized by a new policy. Those decisions remain in the later application module.
