@@ -263,4 +263,4 @@ an application. Existing excerpt records without stored rules need one new
 discovery run before they can be enriched. Re-running a market search preserves
 an already-supplied full JD instead of reverting it to a shorter excerpt.
 
-Test locally: \`python -m unittest discover -s tests -v\`.
+Test locally: `python -m unittest discover -s tests -v`.
