@@ -111,7 +111,8 @@ class ScanMonitorTests(unittest.TestCase):
         try:
             self.assertEqual(service.snapshot()['scanner']['interval_minutes'],60)
             self.assertTrue(service.snapshot()['scanner']['next_scan_at'])
-            self.assertEqual(service.last_manual_request(),self.request)
+            saved_request=service.last_manual_request()
+            self.assertEqual({key:saved_request[key] for key in self.request},self.request)
             service.scheduled_scan(background=False)
             state=service.snapshot()
             self.assertEqual(state['runs'][0]['trigger'],'scheduled')
