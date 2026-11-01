@@ -212,13 +212,19 @@ def fetch_source(source, rules, reader=read_json):
 
 
 def source_catalog():
+    try:
+        from .company_directory import load_directory, verified_boards
+        catalog_count, verified_count = len(load_directory()), len(verified_boards())
+    except (ValueError, OSError, KeyError):
+        catalog_count, verified_count = 0, 0
     return [
         {'name':'Greenhouse', 'kind':'Company boards', 'configured':True, 'syntax':'greenhouse:token'},
         {'name':'Lever', 'kind':'Company boards', 'configured':True, 'syntax':'lever:site'},
         {'name':'Ashby', 'kind':'Company boards', 'configured':True, 'syntax':'ashby:board'},
         {'name':'SmartRecruiters', 'kind':'Company boards · full detail', 'configured':True, 'syntax':'smartrecruiters:company'},
-        {'name':'Company watchlist · 299 links, 2 verified public ATS boards', 'kind':'Directory; unverified links are NOT fetched',
-         'configured':True, 'syntax':'directory:verified'},
+        {'name':f'Company watchlist · {catalog_count} career links; {verified_count} verified ATS feeds',
+         'kind':'Directory; unverified links are NOT fetched',
+         'configured':verified_count>0, 'syntax':'directory:verified'},
         {'name':'Adzuna', 'kind':'Market search · excerpts require full-JD enrichment',
          'configured':bool(os.getenv('ADZUNA_APP_ID') and os.getenv('ADZUNA_APP_KEY')), 'syntax':'adzuna:us'},
         {'name':'LinkedIn / Indeed / Workday / other sources', 'kind':'Dedicated discovery connectors not implemented',
