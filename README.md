@@ -47,3 +47,42 @@ Repeat the first command: one job remains in `data/agent.db`, with a separate in
 5. ATS application workers and submission reconciliation.
 
 See [architecture](docs/architecture.md). This increment fetches Greenhouse/Lever boards; it does not scrape arbitrary job URLs, create accounts, generate resumes, or submit applications.
+
+## Expanded sources and the independent GPT worker
+
+Supported connectors now include `ashby:board` and optional market search `adzuna:us`, in addition to Greenhouse and Lever. These are separate source adapters, not universal job-board coverage. LinkedIn, Indeed, Workday discovery and other sources do not have dedicated connectors yet. The dashboard reports supported sources and setup state.
+
+Adzuna requires `ADZUNA_APP_ID` and `ADZUNA_APP_KEY` in the dashboard process environment. Set them locally using your normal secret manager; do not commit or send credentials in chat. With both configured, an empty Sources field searches Adzuna US using the title prompt. Search is bounded to 3 pages per title and 5 alternative titles. Adzuna descriptions are treated as excerpts: they appear as **needs full JD**, and do not enter the resume queue. Complete employer-JD enrichment is the next discovery milestone.
+
+To avoid entering company boards on every run, put your board sources in a local JSON array and start:
+
+```powershell
+python -m agent.dashboard --sources-file examples/sources.json
+```
+
+The included file contains only the Greenhouse demonstration board. Replace it with the boards you want; leaving the Sources field empty uses those defaults. Explicit Sources overrides server defaults. Sources and requirements are visible in the persisted run config.
+
+### Start the second process
+
+1. Copy `examples/profile.template.json` to `data/profile.json`.
+2. Replace every placeholder with exact professional facts you have verified. Set `verified` to true for the profile and each fact only after review. Do not use the template as a real profile.
+3. Configure `OPENAI_API_KEY` and `OPENAI_MODEL` in the worker's environment. The key is server-side only. Select a model your API account supports with Responses structured outputs. There is no assumed default model.
+4. In a second terminal, from the same repository folder and using the same database:
+
+```powershell
+python -m agent.resume_worker --profile data/profile.json --limit 1
+```
+
+For polling while discovery continues:
+
+```powershell
+python -m agent.resume_worker --profile data/profile.json --watch --limit 10
+```
+
+The limit is a task-attempt budget, not a successful-draft count. Without --watch, the worker exits if no eligible tasks are available. With --watch, it waits until the task budget is used or you press Ctrl+C.
+
+The independent worker consumes queued `resume.requested.v1` events, leases one task at a time, calls GPT through the OpenAI Responses API, validates returned fact IDs, and atomically records a draft, acknowledgement, and `resume.drafted.v1` event. The dashboard's **GPT drafts** tab shows the result. Failures are visible, backed off, and retried at most three times. Expired leases can be recovered by another worker. If a process crashes after an API response but before saving, the API call may be repeated and billed again; only the local result/acknowledgement is deduplicated.
+
+This is the first stage-2 increment: GPT selects/orders verified facts and reports unsupported job requirements. The application renders the exact supplied fact text, preventing generated replacements of dates, titles, or experience claims. It is **not yet a finished tailored DOCX/PDF resume**; the approved format and document renderer are still needed. No account creation or application submission is enabled. Keys never belong in the browser, Git, screenshots, or activity logs.
+
+The browser and worker communicate through the local durable outbox/queue, not this ChatGPT conversation. A Kafka relay can later replace the transport behind this event contract. The profile hash is saved with every draft; only verified facts are sent to the model, not arbitrary profile/contact fields.

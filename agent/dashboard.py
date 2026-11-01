@@ -2,6 +2,7 @@
 import argparse
 from contextlib import contextmanager
 import json
+import os
 import re
 import sqlite3
 import threading
@@ -10,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 from .intake import IntakeStore
-from .sources import fetch_board, validate_sources
+from .sources import fetch_source, source_catalog, validate_sources
 
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS discovery_runs(
@@ -50,9 +51,10 @@ def rules_from_request(body):
 
 
 class Service:
-    def __init__(self, database, fetcher=fetch_board):
+    def __init__(self, database, fetcher=None, default_sources=None):
         self.database = database
         self.fetcher = fetcher
+        self.default_sources = default_sources or []
         self.lock = threading.Lock()
         store = IntakeStore(database)
         store.close()
@@ -76,6 +78,9 @@ class Service:
             db.execute('INSERT INTO activity(run_id,kind,message) VALUES(?,?,?)', (run_id, kind, message))
 
     def start(self, body, background=True):
+        body = dict(body)
+        if not body.get('sources'):
+            body['sources'] = self.default_sources or (['adzuna:us'] if os.getenv('ADZUNA_APP_ID') and os.getenv('ADZUNA_APP_KEY') else [])
         prompt, rules, sources = rules_from_request(body)
         if not self.lock.acquire(blocking=False):
             raise ValueError('A discovery run is already active')
@@ -102,7 +107,7 @@ class Service:
             for source in sources:
                 self.event(run_id, 'fetching', f'Fetching {source}')
                 try:
-                    jobs = self.fetcher(source)
+                    jobs = self.fetcher(source) if self.fetcher else fetch_source(source, rules)
                     self.event(run_id, 'fetched', f'{source}: fetched {len(jobs)} postings')
                     for job in jobs:
                         try:
@@ -110,7 +115,7 @@ class Service:
                             result = store.import_job(job, rules)
                             reasons = result['qualification']['reasons']
                             if reasons:
-                                self.event(run_id, 'excluded', f"{job['title']}: {'; '.join(reasons)}")
+                                self.event(run_id, result['qualification']['status'], f"{job['title']}: {'; '.join(reasons)}")
                                 continue
                             with self.connect() as db:
                                 cursor = db.execute('INSERT OR IGNORE INTO resume_queue(job_id,run_id,snapshot) VALUES(?,?,?)',
@@ -132,7 +137,7 @@ class Service:
                     errors += 1
                     self.event(run_id, 'error', f'{source}: {type(exc).__name__}: {exc}')
             status = 'completed_with_errors' if errors else 'completed'
-            self.event(run_id, 'finished', 'Discovery finished. Resume consumer has not started.')
+            self.event(run_id, 'finished', 'Discovery finished. Qualified jobs are available to the independent resume worker.')
         except Exception as exc:
             status = 'failed'
             self.event(run_id, 'error', f'{type(exc).__name__}: {exc}')
@@ -148,6 +153,9 @@ class Service:
     def snapshot(self):
         with self.connect() as db:
             return {
+                'sources': source_catalog(),
+                'default_sources': self.default_sources,
+                'drafts': [dict(x) for x in db.execute('SELECT queue_order,profile_version,result,created_at FROM resume_drafts ORDER BY queue_order')] if db.execute("SELECT 1 FROM sqlite_master WHERE name='resume_drafts'").fetchone() else [],
                 'runs': [dict(x) for x in db.execute('SELECT * FROM discovery_runs ORDER BY created_at DESC,rowid DESC LIMIT 20')],
                 'activity': [dict(x) for x in db.execute('SELECT * FROM activity ORDER BY id DESC LIMIT 200')],
                 'jobs': [dict(id=x['id'], **json.loads(x['payload'])) for x in db.execute('SELECT * FROM jobs ORDER BY updated_at DESC LIMIT 500')],
@@ -201,11 +209,15 @@ def main():
     parser = argparse.ArgumentParser(description='Local job discovery dashboard')
     parser.add_argument('--database', default='data/agent.db')
     parser.add_argument('--port', default=8765, type=int)
+    parser.add_argument('--sources-file', help='JSON array of default company-board and market-search sources')
     args = parser.parse_args()
     Path(args.database).parent.mkdir(parents=True, exist_ok=True)
     store = IntakeStore(args.database)
     store.close()
-    service = Service(args.database)
+    defaults = json.loads(Path(args.sources_file).read_text(encoding='utf-8')) if args.sources_file else []
+    if defaults:
+        defaults = validate_sources(defaults)
+    service = Service(args.database, default_sources=defaults)
     server = ThreadingHTTPServer(('127.0.0.1', args.port), make_handler(service))
     print(f'Job dashboard: http://127.0.0.1:{args.port}', flush=True)
     try:

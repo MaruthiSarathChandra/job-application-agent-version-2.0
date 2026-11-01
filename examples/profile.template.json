@@ -1,0 +1,10 @@
+{
+  "profile_id": "replace-with-your-profile-id",
+  "verified": false,
+  "facts": [
+    {"id": "education-1", "section": "Education", "text": "Replace with your exact verified degree, school, and dates.", "verified": false},
+    {"id": "experience-1", "section": "Experience", "text": "Replace with your exact employer, title, dates, and factual work description.", "verified": false},
+    {"id": "project-1", "section": "Projects", "text": "Replace with a verified project description and its real repository link.", "verified": false},
+    {"id": "skills-1", "section": "Skills", "text": "Replace with verified skills.", "verified": false}
+  ]
+}

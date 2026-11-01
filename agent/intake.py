@@ -27,7 +27,7 @@ def normalize_url(value):
 def detect_ats(url):
     host = urlsplit(url).hostname
     for suffix, ats in [('myworkdayjobs.com', 'workday'), ('ats.rippling.com', 'rippling'),
-                        ('greenhouse.io', 'greenhouse'), ('lever.co', 'lever')]:
+                        ('greenhouse.io', 'greenhouse'), ('lever.co', 'lever'), ('ashbyhq.com', 'ashby')]:
         if host == suffix or host.endswith('.' + suffix):
             return ats
     return 'career_site'
@@ -49,6 +49,9 @@ def qualify(job, requirements):
     for term in requirements.get('jd_keywords', []):
         if term.casefold() not in job.get('description', '').casefold():
             reasons.append(f'JD missing required phrase: {term}')
+    if job.get('description_completeness') == 'excerpt':
+        return {'status': 'needs_full_jd', 'reasons': ['Search excerpt only; retrieve the complete employer JD before qualification'],
+                'scope': 'Not qualified from a search excerpt'}
     return {'status': 'excluded' if reasons else 'matched', 'reasons': reasons,
             'scope': 'configured title/location/JD rules only; full eligibility not assessed'}
 
