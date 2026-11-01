@@ -340,3 +340,76 @@ Adzuna still needs its own keys and returns excerpts pending full-JD
 enrichment. The discovery pipeline remains read-only; it cannot submit
 applications. Agent 2/3 use the same existing SQLite queues and database.
 Run `python -m unittest discover -s tests -v` for offline regression tests.
+
+
+## Agent 1: auditable refreshes, job observation history and source health
+
+**Goal:** A scan must tell you which employer APIs were checked, how many
+postings were actually returned, how many were new or previously observed,
+why jobs were excluded, and how many fresh resume tasks were queued. A
+"completed" run alone is **not** evidence that new relevant jobs exist.
+
+### Start Agent 1 with automatic scans (opt-in)
+
+```powershell
+git switch main
+git pull --ff-only origin main
+python -m agent.dashboard --sources-file examples/sources.json --scan-every-minutes 60
+```
+
+- On first use, click **Scan now** once with your chosen titles, verified
+  employer feeds and **US** country filter. This persists the exact manual
+  request; subsequent scheduled scans replay that same request.
+- Only the dashboard process schedules discovery. **Browser UI polling
+  every two seconds does not fetch employer jobs.**
+- Automatic scanning is off unless you pass `--scan-every-minutes N`
+  (valid N: 5–1440). It runs while Terminal 1 remains open, is not a
+  cloud/background service, and does not retroactively run missed scans
+  during machine shutdown. Restart it with the same flag after a reboot.
+- Scans are serialized; no concurrent discovery request is silently
+  interleaved. A scheduled run can be skipped while another run is active.
+- The dashboard shows next scan and the latest completed scan in local
+  time, alongside source-by-source fetched/new/existing/matched/queued/error
+  counters. A successful API call returning **zero** postings is recorded
+  as zero rather than displayed as fresh results. Provider errors are
+  counted and reported without leaking API credential strings.
+
+### Timeline semantics
+
+- **Latest scan** is a filtered view of jobs seen in that discovery run.
+  **Saved history** contains previously observed jobs and is not a claim
+  that they were found again. Existing resume-queue entries persist.
+- `first_seen_at` is when this local agent **first ingested a new job**;
+  `last_seen_at` is updated after a later successful observation;
+  `last_run_id` identifies the most recent successful observation. These
+  are stored in SQLite without resetting stable job IDs or requeueing jobs
+  that Agent 2 already processed.
+- Older records imported before this migration have unknown
+  `first_seen_at` (null) rather than an invented timestamp. Their
+  `last_seen_at` appears only when they are observed again.
+- `source_posted_at` is displayed only if a provider explicitly supplied
+  a posting/release date; the GUI labels absent values as "Not provided by
+  source". Ashby `publishedAt`, SmartRecruiters `releasedDate`, and
+  Adzuna `created` are the currently supported provider metadata keys.
+  No date from the agent itself is represented as the employer's posting date.
+- `discovery_runs` stores manual/scheduled triggers and finished times;
+  `source_scans` stores durable per-run source reports. The migration
+  adds columns/tables to the existing local SQLite DB without deleting jobs,
+  resume artifacts, or pending application handoffs.
+
+### Scope and acceptance
+
+Run `python -m unittest discover -s tests -v` for deterministic offline
+tests, then perform two **live** scans using the same verified employer boards
+and inspect the timeline. Actual provider API availability, how many current
+US jobs exist, whether employers supply dates, and application eligibility
+must be verified from real responses: offline CI cannot establish those.
+This increment deliberately does not add LinkedIn/Indeed scraping, Gmail,
+Agent 2 resume changes, or Agent 3 submission changes.
+
+**No source-date freshness eligibility filter is enforced yet:** doing so
+while many employer APIs omit publication dates would discard legitimate
+unknown-date postings. Compare first/last observation times and source-provided
+dates in the timeline. Add a separate configurable 7-day filter only after
+verifying real provider date coverage and deciding how unknown dates should
+be treated.
