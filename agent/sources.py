@@ -94,6 +94,11 @@ def fetch_board(source, reader=read_json):
                            location=row.get('categories', {}).get('location') or 'Unspecified',
                            description=plain(description + ' ' + sections + ' ' + (row.get('additionalPlain') or '')),
                            requisition_id=str(row['id']))
+            if provider == 'lever' and type(row.get('createdAt')) is int:
+                # Lever createdAt is NOT the public publication timestamp.
+                from datetime import datetime, timezone
+                job['source_created_at'] = datetime.fromtimestamp(
+                    row['createdAt']/1000,timezone.utc).isoformat(timespec='seconds')
             jobs.append({**job, 'company': company, 'employer_key': source, 'source': source})
         except (KeyError, TypeError, AttributeError) as exc:
             jobs.append({'source_error': f'Malformed posting: {type(exc).__name__}'})
@@ -219,7 +224,9 @@ def fetch_source(source, rules, reader=read_json):
                     description=plain(row.get('description')) or 'Full JD unavailable',
                     requisition_id=identifier, employer_key=source, source=source,
                     description_completeness='excerpt',
-                    **({'source_posted_at':row['created']}
+                    # Adzuna created is when the aggregator listed it; that
+                    # does not prove the employer's publication instant.
+                    **({'source_listed_at':row['created']}
                        if isinstance(row.get('created'),str) else {})))
             if len(rows) < 50:
                 break
