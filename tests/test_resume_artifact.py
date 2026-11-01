@@ -47,6 +47,19 @@ class ArtifactTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT count(*) FROM consumer_receipts WHERE consumer='resume-packager-v1'").fetchone()[0],1)
         self.assertFalse(self.packager().process_one())
 
+    def test_multiline_and_tabbed_facts_preserved_and_tampering_rejected(self):
+        draft=json.loads(self.service.snapshot()['drafts'][0]['result'])
+        header=self.profile['_resume_header']
+        for separator in ('\n', '\t', '\r', '\r\n'):
+            with self.subTest(separator=repr(separator)):
+                text='Built Java APIs.'+separator+'Repository: https://github.com/example/project'
+                draft['sections'][0]['facts'][0]['text']=text
+                raw=render_docx(draft,header)
+                self.assertEqual(validate_docx(raw,draft,header)['status'],'passed')
+                draft['sections'][0]['facts'][0]['text']=text.replace(separator,'')
+                with self.assertRaisesRegex(ValueError,'exactly preserve'):
+                    validate_docx(raw,draft,header)
+
     def test_docx_text_links_and_stable_checksum(self):
         draft=json.loads(self.service.snapshot()['drafts'][0]['result'])
         first=save_artifact(draft,self.profile['_resume_header'],self.artifacts)

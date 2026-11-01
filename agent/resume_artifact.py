@@ -181,12 +181,26 @@ def validate_docx(raw, draft, header):
         if archive.testzip() is not None:
             raise ValueError('DOCX archive integrity check failed')
         root = ET.fromstring(archive.read('word/document.xml'))
-        paragraphs = [''.join(t.text or '' for t in p.iter('{'+ns['w']+'}t')) for p in root.findall('.//w:p', ns)]
+        # Word stores line breaks and tabs as elements rather than w:t text.
+        # Include them when reconstructing content, including hyperlink runs.
+        def paragraph_text(paragraph):
+            parts = []
+            for element in paragraph.iter():
+                if element.tag == '{'+ns['w']+'}t':
+                    parts.append(element.text or '')
+                elif element.tag in ('{'+ns['w']+'}br', '{'+ns['w']+'}cr'):
+                    parts.append('\n')
+                elif element.tag == '{'+ns['w']+'}tab':
+                    parts.append('\t')
+            return ''.join(parts)
+        paragraphs = [paragraph_text(p) for p in root.findall('.//w:p', ns)]
         expected = [header['display_name'], *header['contact_lines']]
         if header['links']:
             expected.append(' | '.join(link['label'] for link in header['links']))
         for section in draft['sections']:
             expected.extend([section['title'], *[f['text'] for f in section['facts']]])
+        # python-docx maps each carriage return to a Word line break.
+        expected = [text.replace('\r', '\n') for text in expected]
         if paragraphs != expected:
             raise ValueError('Rendered resume does not exactly preserve selected facts and header')
         rels = ET.fromstring(archive.read('word/_rels/document.xml.rels'))
