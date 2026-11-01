@@ -2,6 +2,7 @@ import json
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -97,10 +98,19 @@ class DashboardTests(unittest.TestCase):
         thread.start()
         conn = HTTPConnection('127.0.0.1', server.server_port)
         try:
-            conn.request('GET','/')
-            response = conn.getresponse()
-            self.assertEqual(response.status,200)
-            self.assertIn(b'Opportunity pipeline', response.read())
+            original_read_text = Path.read_text
+            def windows_read_text(path, *args, **kwargs):
+                # Reproduce Windows' CP1252 default on every test platform.
+                kwargs.setdefault('encoding', 'cp1252')
+                return original_read_text(path, *args, **kwargs)
+            with patch.object(Path, 'read_text', windows_read_text):
+                conn.request('GET','/')
+                response = conn.getresponse()
+                self.assertEqual(response.status,200)
+                self.assertIn('charset=utf-8', response.getheader('Content-Type'))
+                html = response.read().decode('utf-8')
+                self.assertIn('Opportunity pipeline', html)
+                self.assertIn('→', html)
             conn.request('POST','/api/runs', json.dumps(self.body), {'Origin':'https://evil.example'})
             response = conn.getresponse()
             self.assertEqual(response.status,403)

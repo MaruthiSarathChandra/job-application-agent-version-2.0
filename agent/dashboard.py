@@ -168,7 +168,7 @@ def make_handler(service):
 
         def do_GET(self):
             if self.path == '/':
-                self.reply(200, Path(__file__).with_name('web').joinpath('index.html').read_text(), 'text/html')
+                self.reply(200, Path(__file__).with_name('web').joinpath('index.html').read_text(encoding='utf-8'), 'text/html')
             elif self.path == '/api/state':
                 self.reply(200, service.snapshot())
             else:
