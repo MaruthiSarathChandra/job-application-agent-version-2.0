@@ -49,6 +49,11 @@ def rules_from_request(body):
         if not isinstance(value, list) or len(value) > 30 or any(not isinstance(x, str) or not x.strip() or len(x) > 100 for x in value):
             raise ValueError(f'{key} must be a list of short phrases')
         rules[key] = value
+    countries = body.get('country_codes', [])
+    if not isinstance(countries, list) or len(countries)>10 or any(
+            not isinstance(x,str) or not re.fullmatch(r'[A-Za-z]{2}',x) for x in countries):
+        raise ValueError('country_codes must be 2-letter country codes, e.g. US')
+    rules['country_codes'] = list(dict.fromkeys(x.upper() for x in countries))
     return prompt.strip(), rules, validate_sources(body.get('sources'))
 
 
@@ -153,6 +158,10 @@ class Service:
                     self.event(run_id, 'fetched', f'{source}: fetched {len(jobs)} postings')
                     for job in jobs:
                         try:
+                            if 'source_error' in job:
+                                errors += 1
+                                self.event(run_id, 'error', f"{job.get('source', source)}: {job['source_error']}")
+                                continue
                             self.event(run_id, 'reading', f"Reading JD: {job.get('title', 'invalid posting')}")
                             result = store.import_job({**job, 'qualification_rules': rules, 'intake_run_id': run_id}, rules)
                             reasons = result['qualification']['reasons']
@@ -237,6 +246,16 @@ def make_handler(service):
                     validate_docx(raw, draft, profile['_resume_header'])
                     self.reply(200, raw, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
                                {'Content-Disposition':'attachment; filename="profile-resume.docx"'})
+                except (ValueError, OSError, KeyError) as exc:
+                    self.reply(400, {'error':str(exc)})
+            elif urlsplit(self.path).path == '/api/companies':
+                from urllib.parse import parse_qs
+                from .company_directory import list_companies
+                args = parse_qs(urlsplit(self.path).query)
+                try:
+                    self.reply(200, list_companies(
+                        query=args.get('q',[''])[0],category=args.get('category',[''])[0],
+                        limit=min(int(args.get('limit',['40'])[0]),100)))
                 except (ValueError, OSError, KeyError) as exc:
                     self.reply(400, {'error':str(exc)})
             elif self.path == '/api/profile':
