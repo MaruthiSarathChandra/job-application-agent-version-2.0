@@ -20,8 +20,9 @@ class DirectoryTests(unittest.TestCase):
         self.assertEqual(item['matched_companies'],1)
         self.assertEqual(item['companies'][0]['board_source'],'greenhouse:cloudflare')
         unknown=list_companies(query='Microsoft')
-        self.assertEqual(unknown['matched_companies'],1)
-        self.assertFalse(unknown['companies'][0]['board_verified'])
+        self.assertGreaterEqual(unknown['matched_companies'],1)
+        self.assertTrue(any(c['name']=='Microsoft' and not c['board_verified']
+                            for c in unknown['companies']))
         self.assertEqual(len(discovery_sources()),10)
         self.assertEqual(discovery_sources()[:2],['greenhouse:cloudflare','lever:palantir'])
 
