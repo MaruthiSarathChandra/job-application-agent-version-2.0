@@ -329,7 +329,8 @@ class Service:
                                                ('resume.requested:'+result['job_id'],'resume.requested.v1',json.dumps(payload)))
                                     counts['queued'] += 1
                                     message = f"#{number} · {title} → waiting for resume"
-                                    self.event(run_id,'queued',message)
+                            if cursor.rowcount:
+                                self.event(run_id,'queued',message)
                         except (ValueError,TypeError,KeyError,sqlite3.Error) as exc:
                             counts['errors'] += 1
                             self.event(run_id,'error',f'{source}: job import failed ({type(exc).__name__})')
