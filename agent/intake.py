@@ -33,6 +33,34 @@ def detect_ats(url):
     return 'career_site'
 
 
+US_STATE_CODES = set('AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC'.split())
+US_STATE_NAMES = set(x.casefold() for x in 'Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|Florida|Georgia|Hawaii|Idaho|Illinois|Indiana|Iowa|Kansas|Kentucky|Louisiana|Maine|Maryland|Massachusetts|Michigan|Minnesota|Mississippi|Missouri|Montana|Nebraska|Nevada|New Hampshire|New Jersey|New Mexico|New York|North Carolina|North Dakota|Ohio|Oklahoma|Oregon|Pennsylvania|Rhode Island|South Carolina|South Dakota|Tennessee|Texas|Utah|Vermont|Virginia|Washington|West Virginia|Wisconsin|Wyoming|District of Columbia'.split('|'))
+
+
+def country_from_job(job):
+    """Only infer US from an explicit country code or recognized US location label."""
+    explicit = job.get('country_code')
+    if isinstance(explicit, str) and re.fullmatch(r'[A-Za-z]{2}', explicit):
+        return explicit.upper()
+    label = job.get('location', '')
+    if not isinstance(label, str):
+        return None
+    if re.search(r'\b(?:United States(?: of America)?|USA|US)\b', label, re.I):
+        return 'US'
+    segments = [x.strip() for x in label.split(',')]
+    if len(segments) >= 2:
+        last = segments[-1]
+        if last.upper() in US_STATE_CODES or last.casefold() in US_STATE_NAMES:
+            return 'US'
+    return None
+
+
+def matches_location(label, wanted):
+    label, wanted = label.strip().casefold(), wanted.strip().casefold()
+    return label == wanted or any(label.startswith(wanted + sep)
+                                  for sep in (',', ';', ' - ', ' ('))
+
+
 def qualify(job, requirements):
     """Only explicit title/location rules; never infer legal eligibility from prose."""
     reasons = []
@@ -44,8 +72,11 @@ def qualify(job, requirements):
            for word in requirements.get('excluded_title_keywords', [])):
         reasons.append('Title matches an excluded keyword')
     locations = requirements.get('locations', [])
-    if locations and job['location'].casefold() not in [x.casefold() for x in locations]:
+    if locations and not any(matches_location(job['location'], wanted) for wanted in locations):
         reasons.append('Location is outside configured locations')
+    allowed_countries = requirements.get('country_codes', [])
+    if allowed_countries and country_from_job(job) not in allowed_countries:
+        reasons.append('Country outside configured countries or not verifiable from posting')
     for term in requirements.get('jd_keywords', []):
         if term.casefold() not in job.get('description', '').casefold():
             reasons.append(f'JD missing required phrase: {term}')
