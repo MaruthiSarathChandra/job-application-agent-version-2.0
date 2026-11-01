@@ -60,7 +60,7 @@ To avoid entering company boards on every run, put your board sources in a local
 python -m agent.dashboard --sources-file examples/sources.json
 ```
 
-The included file contains only the Greenhouse demonstration board. Replace it with the boards you want; leaving the Sources field empty uses those defaults. Explicit Sources overrides server defaults. Sources and requirements are visible in the persisted run config.
+The included file now selects the verified company directory group. You may replace it with specific public boards; leaving the Sources field empty uses those defaults. Explicit Sources overrides server defaults. Sources and requirements are visible in the persisted run config.
 
 ### Start the second process
 
@@ -264,3 +264,79 @@ discovery run before they can be enriched. Re-running a market search preserves
 an already-supplied full JD instead of reverting it to a shorter excerpt.
 
 Test locally: `python -m unittest discover -s tests -v`.
+
+
+## Expanded company discovery: 299-company watchlist and official ATS feeds
+
+The uploaded directory compiled January 14, 2026 is imported into
+`catalog/company_careers_directory.json`: **299 employer entries**, grouped
+by industry, with **296 distinct careers URLs**. These are reference links
+(not live feeds and not a guarantee that the company is currently hiring).
+
+`catalog/verified_public_boards.json` currently maps **10 named companies**
+to identifiable public ATS boards (Greenhouse and Lever). It includes
+Cloudflare, Palantir, Stripe, Coinbase, Robinhood, Airbnb, DoorDash, Okta,
+Block and Roblox. The source URLs are independently identified, but actual
+API availability and job counts are tested at discovery runtime.
+The other **289 companies have no verified live-board connector**; the agent
+does not invent or scrape ATS endpoints from their names.
+
+To search the directory without making network requests:
+
+```powershell
+python -m agent.company_directory --search cloud
+python -m agent.company_directory --category Technology --limit 40
+python -m agent.company_directory --sources
+```
+
+In the dashboard, expand **Company careers directory**, search by name, and
+click **Use verified company feeds**. It fills the Sources field with
+`directory:verified`. Keep the **Allowed countries** field set to `US`
+to avoid jobs based outside the USA. Searching a specific city such as
+`Kansas City` matches more precise location labels such as
+`Kansas City, MO, US`. Ambiguous locations without identifiable country
+are excluded when the US filter is enabled; do not assume remote means US.
+
+Recommended role prompt:
+`Software Engineer | Backend Software Engineer | Java Developer | Software Developer`.
+Each term is an alternative title. Required JD phrases are **ALL required**:
+`Java, Spring Boot` rejects postings that don't contain both; leave this
+field blank for broad discovery and inspect the full JD before approval.
+
+Start the regular dashboard (Terminal 1) and separate resume/application
+workers (Terminals 2/3) in their existing setup. Or configure the default
+sources for Terminal 1:
+
+```powershell
+python -m agent.dashboard --sources-file examples/sources.json
+```
+
+The checked-in example now uses `directory:verified`; it no longer
+targets the Greenhouse demonstration board.
+
+### More company APIs / future extension
+
+- `greenhouse:token`, `lever:company`, `ashby:board`: existing employer
+  feed adapters, plus `smartrecruiters:company` for SmartRecruiters' public
+  Posting API. SmartRecruiters fetches the public list and individual job
+  details (with a 200 matching-JD cap); missing full descriptions are marked
+  `needs_full_jd`, never silently submitted to Agent 2.
+- Add new verified board links in `catalog/verified_public_boards.json`
+  only after following an employer's careers page to its genuine public ATS
+  board and recording a matching HTTPS proof URL. The strict board-source
+  allowlist prevents arbitrary crawling. Directory group searches are
+  capped at 20 approved boards per run. One unavailable board is reported
+  in activity without discarding other employers' matches.
+- Official LinkedIn/Indeed job search is **not connected**. Both providers'
+  available partner/developer APIs focus on approved partnerships, employer
+  posting or recruiting flows, not unrestricted personal job searches. This
+  update does not automate LinkedIn/Indeed scraping, bypass sign-in, use
+  third-party browser scraping, or imply a paid data provider is free.
+  Add a compliant licensed search provider only with verified API access,
+  terms and key management.
+
+No API key is needed for the 10 curated public ATS board connections.
+Adzuna still needs its own keys and returns excerpts pending full-JD
+enrichment. The discovery pipeline remains read-only; it cannot submit
+applications. Agent 2/3 use the same existing SQLite queues and database.
+Run `python -m unittest discover -s tests -v` for offline regression tests.
