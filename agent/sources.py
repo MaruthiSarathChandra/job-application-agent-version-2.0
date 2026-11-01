@@ -152,7 +152,7 @@ def fetch_smartrecruiters(source, rules, reader=read_json):
                          'description':content or 'Full JD unavailable',
                          'description_completeness':'full' if content.strip() else 'excerpt',
                          'description_provenance':'official_smartrecruiters_public_api'})
-        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+        except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
             jobs.append({'source':source,'source_error':f'Invalid public posting detail ({type(exc).__name__})'})
     return jobs
 
@@ -170,7 +170,13 @@ def fetch_source(source, rules, reader=read_json):
         jobs = []
         for board in boards:
             try:
-                jobs.extend(fetch_source(board, rules, reader))
+                fetched = fetch_source(board, rules, reader)
+                wanted = rules.get('title_keywords', [])
+                # Keep the 299-company directory practical: it is a job
+                # candidate search, not an all-roles indexing crawler.
+                jobs.extend(row for row in fetched if 'source_error' in row
+                            or not wanted or any(term.casefold() in row.get('title','').casefold()
+                                                 for term in wanted))
             except Exception as exc:
                 # Do not discard other companies' valid results on a single API failure.
                 jobs.append({'source':board, 'source_error':f'Public board unavailable ({type(exc).__name__})'})
