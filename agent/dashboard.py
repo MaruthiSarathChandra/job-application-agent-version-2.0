@@ -198,6 +198,7 @@ class Service:
                 'regenerations': [dict(x) for x in db.execute('SELECT id,queue_order,status,error,created_at FROM resume_regenerations ORDER BY created_at DESC,rowid DESC')],
                 'sources': source_catalog(),
                 'applications': [dict(x) for x in db.execute('SELECT sequence,job_id,resume_artifact_id,status,payload FROM application_queue ORDER BY sequence')] if db.execute("SELECT 1 FROM sqlite_master WHERE name='application_queue'").fetchone() else [],
+                'agent3_tasks': [dict(x) for x in db.execute('SELECT application_order,status,attempts,last_error,plan FROM agent3_tasks ORDER BY application_order')] if db.execute("SELECT 1 FROM sqlite_master WHERE name='agent3_tasks'").fetchone() else [],
                 'default_sources': self.default_sources,
                 'drafts': [dict(x) for x in db.execute('SELECT queue_order,profile_version,result,created_at FROM resume_drafts ORDER BY queue_order')] if db.execute("SELECT 1 FROM sqlite_master WHERE name='resume_drafts'").fetchone() else [],
                 'runs': [dict(x) for x in db.execute('SELECT * FROM discovery_runs ORDER BY created_at DESC,rowid DESC LIMIT 20')],
@@ -287,7 +288,7 @@ def make_handler(service):
             if host != f'127.0.0.1:{self.server.server_port}' or (origin and origin != f'http://{host}'):
                 self.reply(403, {'error': 'Only same-origin local requests are allowed'})
                 return
-            if self.path not in ('/api/runs', '/api/profile', '/api/profile/import', '/api/resumes/regenerate', '/api/resumes/approve', '/api/jobs/enrich'):
+            if self.path not in ('/api/runs', '/api/profile', '/api/profile/import', '/api/resumes/regenerate', '/api/resumes/approve', '/api/jobs/enrich', '/api/agent3/preflight'):
                 self.reply(404, {'error': 'Not found'})
                 return
             try:
@@ -304,7 +305,15 @@ def make_handler(service):
                 body = json.loads(raw)
                 if not isinstance(body, dict):
                     raise ValueError('Expected a JSON object')
-                if self.path == '/api/jobs/enrich':
+                if self.path == '/api/agent3/preflight':
+                    from .application_worker import Agent3
+                    limit = body.get('limit', 1)
+                    if type(limit) is not int or not 1 <= limit <= 10:
+                        raise ValueError('Preflight limit must be 1–10')
+                    worker = Agent3(service.database)
+                    processed = sum(1 for _ in range(limit) if worker.process_one())
+                    self.reply(200, {'processed': processed, 'tasks': worker.status()})
+                elif self.path == '/api/jobs/enrich':
                     from .enrichment import enrich_job
                     self.reply(200, enrich_job(service, body))
                 elif self.path == '/api/resumes/approve':
