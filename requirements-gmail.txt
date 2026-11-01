@@ -1,0 +1,2 @@
+google-auth>=2.0,<3.0
+google-auth-oauthlib>=1.2,<2.0
