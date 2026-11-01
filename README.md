@@ -325,3 +325,48 @@ Gmail OTP retrieval is not yet wired to an ATS browser adapter; it is an
 isolated, offline-tested reader module.
 
 Run `python -m unittest discover -s tests -v` to execute the regression suite.
+
+
+### Optional guided ATS form prefill (no automatic submission)
+
+Once an approved job reaches `awaiting_browser_adapter`, Agent 3 can open a
+**local Chromium window** and fill common contact fields plus an approved DOCX
+on a visible employer form. This helper does not bypass login, navigate a
+multi-page ATS workflow by itself, choose sensitive answers, or click Submit.
+
+Create **data/application-answers.json** locally (gitignored), for example:
+
+```json
+{
+  "verified": true,
+  "first_name": "Your verified first name",
+  "last_name": "Your verified last name",
+  "email": "your-application-email@example.com",
+  "phone": "+1 555 010 0000",
+  "linkedin": "https://www.linkedin.com/in/your-profile/"
+}
+```
+
+Never claim false work authorization, employment or degree information;
+unrecognized employer questions remain for you to answer.
+
+```powershell
+python -m pip install -r requirements-browser.txt
+python -m playwright install chromium
+python -m agent.application_browser --application-order 1 --dry-run
+python -m agent.application_browser --application-order 1
+```
+
+The command opens the approved job in isolated local Chromium. If an
+application form is not visible yet, navigate to it manually, return to the
+terminal and press Enter. The helper fills *only* recognized fields, uploads
+the approved DOCX if the page accepts that format, reports skipped fields and
+then leaves the browser open for your review. Press Enter to close it.
+Employer redirects to a different host stop the helper unless you explicitly
+add `--allow-host trusted-employer.example`. No automation is attempted
+for unknown questions, authentication or final submission.
+
+This is a bounded first browser adapter, not a universal Workday/Greenhouse/
+Lever solution. The Gmail OTP reader exists separately but is not yet
+automatically wired to this browser. No code or employer login details are
+stored in logs, and this helper does not mark an application as submitted.
