@@ -1,0 +1,73 @@
+# Architecture decision: modular application with durable stages
+
+Status: initial engineering baseline; business fallback boundaries and additional profile facts remain unconfigured.
+
+## Four modules
+
+| Module | Input | Output |
+| --- | --- | --- |
+| Discovery/intake | Requirements, source or URL | Normalized job, captured JD, provenance, qualification |
+| Resume preparation | Job + immutable verified profile version | Validated content + fixed-template artifact |
+| Account access | Employer tenant + account reference | Session or blocker |
+| Application | Job + artifact + session + approved answers | Confirmation, blocker, or submission uncertainty |
+
+A coordinator will persist transitions and claim bounded work. Modules depend on domain contracts; browser, model API, mailbox, and storage are adapters. Start with SQLite for local use. Multiple hosts will require a database with suitable job-claim concurrency and migrations; do not treat SQLite as a distributed queue.
+
+## Implemented boundary
+
+The first increment covers captured JSON -> validation -> normalization -> title/location qualification -> transactional upsert + attempt history. It establishes durable intake only. No browser or worker coordinator exists yet. SQLite schema version is 1; introduce explicit migrations before changing deployed schemas.
+
+## Planned workflow
+
+Discovered -> qualified/excluded -> resume_ready -> account_ready -> applying -> submission_pending -> submitted.
+
+Any stage can record a blocker. Account access may be requested midway through application navigation. Retry counts and timeouts must be bounded. Persist submission_pending before attempting Submit; an interrupted attempt becomes submission_unknown and must reconcile with employer confirmation before any retry.
+
+## Identity and facts
+
+Job identity is shared across email accounts. Explicit employer keys and requisition IDs are preferable to URLs. Resume/profile versions are immutable inputs to later stages. Two email accounts never justify different invented employment histories. Sensitive factual answers come from explicitly verified values. Secrets, mailbox tokens, sessions, and generated candidate documents must stay outside Git and model prompts unless specifically required and appropriately scoped.
+
+## Acceptance and testing
+
+Current: importing the same job twice, including a requisition URL alias, retains one job and two attempt records across database reopening. Invalid data is not imported. URL tracking cleanup preserves meaningful requisition parameters. ATS detection checks host boundaries.
+
+Next: fixture-based fetch tests, extraction completeness, explicit failure persistence, transition/lease recovery, account isolation, and post-submit timeout reconciliation. Live applications are not the regression suite.
+
+## Discovery dashboard and resume handoff (increment 2)
+
+The local HTTP server serves an interactive HTML client. `POST /api/runs` creates an asynchronous discovery run; `GET /api/state` reads persisted runs, jobs, activities, and queue entries. The browser polls every two seconds. No model is called: a documented title-prompt grammar plus explicit location, exclusion, and JD-phrase fields produces deterministic rules. A board fetch or individual posting failure is recorded while other sources continue.
+
+Public read adapters: Greenhouse Job Board API (`content=true`) and Lever Postings API (bounded pagination). Network calls have a 20-second timeout and an 8 MB response cap. Board identifiers are validated; arbitrary hosts and redirects are not accepted. Company labels currently use board tokens. References: https://docs.greenhouse.io/job-board.html and https://github.com/lever/postings-api .
+
+Matches produce an immutable `resume_queue` snapshot. Queue insertion and the corresponding `outbox` insert share one transaction. A unique job ID prevents duplicate enqueues across searches. Intake records and activity are separate from this transaction; a crash before enqueue is recoverable by rerunning discovery. An existing queued snapshot is not replaced when the job is fetched again with different criteria. Stage 2 must revalidate job availability and the current candidate profile before generation/application.
+
+Event topic: `resume.requested.v1`. Payload: schema_version, queue_order, job_id, job snapshot (including URL, full JD, source, and qualification), and status. Event key: `resume.requested:<job_id>`.
+
+This is a SQLite transactional outbox, not an installed Kafka broker. A future relay can publish outbox rows and mark published_at after broker acknowledgement; consumers must deduplicate by event_key because relay retries can redeliver. Consumer leases, acknowledgements, retries, dead-letter handling, and resume generation are deferred to stage 2. There is no consumer in this increment.
+
+The default server listens on loopback only and rejects cross-origin POST requests. It is a local development server, not an internet-facing deployment. Each discovery run has persisted config and activity; restarts mark old running records interrupted. One run per process prevents overlapping producers; multi-process ownership/leases are future work.
+
+## Expanded discovery and first GPT consumer (increment 3)
+
+Ashby is now a public direct-board connector; unlisted jobs are omitted. Adzuna is an optional cross-employer search adapter configured with server-only credentials. It cannot guarantee all-market coverage and its excerpts are not treated as complete JDs: those leads are persisted as needs_full_jd and never generate resume requests. Full-JD enrichment and dedicated LinkedIn/Indeed/Workday search connectors remain unimplemented. Source capability and configuration state are exposed without secrets. Defaults can be loaded from a local sources-file; explicit run sources override them.
+
+`agent.resume_worker` is a separate process consuming the versioned request contract from the local outbox. It joins the durable queue, claims under BEGIN IMMEDIATE, and uses token-checked 300-second leases. A stale worker cannot overwrite a newer worker's result. Queue status moves resume_waiting -> resume_processing -> resume_draft_ready, or resume_error. Errors back off by 30 seconds per attempt, with three attempts maximum. An exhausted expired lease is marked as an error rather than staying processing forever.
+
+Success commits the fact-selection draft, consumer receipt, queue state, activity, and resume.drafted.v1 event together. A unique (consumer,event_key) receipt prevents repeat local processing after success. Delivery is at least once at the external API boundary: an API response lost before local commit may be regenerated and incur another charge. The existing outbox published_at field is reserved for a future broker relay; local consumer acknowledgements live in consumer_receipts and do not claim broker publication.
+
+Profile facts are loaded from a local verified catalog and hashed. The API receives only title/company/JD/link and verified professional facts, with store=false and strict JSON Schema output. GPT returns only ordered fact IDs and unsupported requirements. Unknown/duplicate IDs, refusals, incomplete responses, or oversized input fail the task. Final fact text and section membership come from the local catalog. Current output is a draft selection, not a finished resume artifact or a proof of job eligibility. Approved formatting, immutable candidate-version selection for multiple profiles, DOCX/PDF rendering, and later-stage revalidation remain separate work.
+
+Schema additions are backwards-compatible tables and transactional column checks. Queue and intake identity are unchanged, preserving existing local waiting entries. Run only one discovery server per database; independent resume workers coordinate task claims through SQLite.
+
+
+## Agent 2 DOCX packaging and Agent 3 queue (increment 4)
+
+The Agent 2 process now orchestrates two durable substeps. The GPT consumer checkpoints selected facts and acknowledges its request through resume-gpt-v1. A packager consumes the resulting resume.drafted.v1 event through resume-packager-v1. This intermediate durable event allows crash recovery without regenerating GPT content. Final acknowledgement, artifact metadata, application queue entry, activity, and applications.ready.v1 event commit atomically after file creation and validation.
+
+Packager claims use their own BEGIN IMMEDIATE transaction, random token, 300-second lease, bounded three-attempt retries, and backoff. A stale token cannot publish. DOCX files are stored first under SHA-256 names using temp-file/replace publication. The DB transaction then exposes the artifact. If that transaction fails, an orphan file may remain, but the task remains unacknowledged and no application-ready event is visible. This is durable at the local process/database boundary; external shared/object storage is a future adapter.
+
+The renderer uses exact local verified header and fact text, stable ZIP metadata, explicit Times New Roman fonts, bold headings, and preserved hyperlinks. It validates archive integrity, exact text, hyperlink targets, typography, and absence of inherited title borders. It has a bounded word budget but does not assert runtime page count or visual correctness. The validation scope and page_count_verified=false travel in the event. Representative layout QA was performed in development. Eligibility remains not_assessed, and unsupported job requirements remain visible in the outgoing JSON.
+
+The message includes schema_version, event_id, correlation_id, job_id, profile_version, job snapshot with full JD, resume artifact locator/hash/validation, and application_queue_order. The local artifact URI is logical; Agent 3 on the same host uses the database/storage adapter. Multi-host deployment requires a shared storage adapter and broker relay rather than assuming local paths are globally readable.
+
+The dashboard exposes a separate Agent 3 queue and checksum-checked DOCX downloads. There is no Agent 3 consumer, account creation, or browser submission in this increment. Historical draft-only records require their original profile version; header changes must not silently alter candidate identity.
