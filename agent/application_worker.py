@@ -19,6 +19,7 @@ from .intake import detect_ats
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS agent3_tasks (
  application_order INTEGER PRIMARY KEY REFERENCES application_queue(sequence),
+ ready_event_id TEXT NOT NULL,
  status TEXT NOT NULL DEFAULT 'queued',
  attempts INTEGER NOT NULL DEFAULT 0,
  worker_token TEXT, lease_until REAL,
@@ -56,23 +57,40 @@ class Agent3:
             db.close()
 
     def sync(self):
-        """Queue only exact approved application-ready events; never unreviewed drafts."""
+        """Queue only approved events; safely reset preflight after a new revision."""
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
-            db.execute('''INSERT OR IGNORE INTO agent3_tasks(application_order)
-                SELECT a.sequence FROM application_queue a
+            rows = db.execute("""SELECT a.sequence,o.payload FROM application_queue a
                 JOIN outbox o ON o.event_key='applications.ready:'||a.job_id
                 WHERE a.status='ready_for_application'
-                AND o.topic='applications.ready.v1' ''')
-            # A withdrawn, regenerated or invalidated resume must not retain an
-            # executable task. Preflight outcomes are intentionally retained.
-            db.execute('''UPDATE agent3_tasks SET status='blocked',
+                  AND o.topic='applications.ready.v1'""").fetchall()
+            for row in rows:
+                try:
+                    event_id = json.loads(row['payload'])['event_id']
+                except (ValueError, TypeError, KeyError):
+                    continue
+                if not isinstance(event_id, str) or not event_id:
+                    continue
+                db.execute('INSERT OR IGNORE INTO agent3_tasks(application_order,ready_event_id) VALUES(?,?)',
+                           (row['sequence'], event_id))
+                # A new, separately approved resume revision must get a new
+                # preflight. Never reset a submitted or uncertain application.
+                db.execute("""UPDATE agent3_tasks SET status='queued',attempts=0,
+                    ready_event_id=?,plan=NULL,last_error=NULL,worker_token=NULL,
+                    lease_until=NULL,next_attempt_at=0,updated_at=CURRENT_TIMESTAMP
+                    WHERE application_order=? AND ready_event_id<>?
+                    AND status NOT IN ('submitted','submission_unknown')""",
+                    (event_id, row['sequence'], event_id))
+            # A withdrawn, regenerating or unapproved resume cannot retain an
+            # active browser-preflight plan.
+            db.execute("""UPDATE agent3_tasks SET status='blocked',
                 last_error='Resume handoff is no longer approved',worker_token=NULL,lease_until=NULL,
                 updated_at=CURRENT_TIMESTAMP
-                WHERE status IN ('queued','checking','error') AND application_order IN
+                WHERE status IN ('queued','checking','error','awaiting_browser_adapter')
+                  AND application_order IN
                 (SELECT t.application_order FROM agent3_tasks t
                  JOIN application_queue a ON a.sequence=t.application_order
-                 WHERE a.status<>'ready_for_application')''')
+                 WHERE a.status<>'ready_for_application')""")
 
     def status(self):
         self.sync()
