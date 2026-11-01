@@ -242,48 +242,79 @@ class Service:
         self.next_scan_epoch = None
         self.scan_interval_minutes = None
 
+    def _source_progress(self, run_id, source, counts, status='running', finished=False):
+        """Commit progress after each batch, so a long scan is not frozen in UI."""
+        with self.connect() as db:
+            db.execute("""UPDATE source_scans SET status=?, fetched=?,processed=?,
+                title_filtered=?,new_jobs=?,existing_jobs=?,matched=?,excluded=?,
+                needs_full_jd=?,date_unknown=?,too_old=?,queued=?,errors=?,
+                finished_at=? WHERE run_id=? AND source=?""",
+                (status, *(counts[k] for k in (
+                    'fetched','processed','title_filtered','new_jobs','existing_jobs',
+                    'matched','excluded','needs_full_jd','date_unknown','too_old',
+                    'queued','errors')),
+                 self.utc_now() if finished else None,run_id,source))
+
     def run(self, run_id, rules, sources):
+        """Sequential public-board scan. One failing source never stops later ones."""
         store = None
         failures = 0
-        totals = {'fetched':0, 'new_jobs':0, 'existing_jobs':0,
-                  'matched':0, 'excluded':0, 'needs_full_jd':0, 'queued':0}
-        now = self.utc_now
+        counters = ('fetched','processed','title_filtered','new_jobs','existing_jobs',
+                    'matched','excluded','needs_full_jd','date_unknown','too_old','queued')
+        totals = {key:0 for key in counters}
         try:
             store = IntakeStore(self.database)
-            # "directory:verified" is a search group. Report individual
-            # verified boards even when they return zero or fail.
             from .company_directory import discovery_sources
             work_sources = []
             for source in sources:
                 work_sources.extend(discovery_sources() if source == 'directory:verified' else [source])
             work_sources = list(dict.fromkeys(work_sources))
-            for source in work_sources:
-                counts = {key:0 for key in (*totals, 'errors')}
-                status = 'completed'
+            self.event(run_id,'scan_started',f'Scanning {len(work_sources)} verified sources in sequence.')
+            wanted = tuple(term.casefold() for term in rules.get('title_keywords', []))
+            for ordinal,source in enumerate(work_sources,1):
+                counts = {key:0 for key in (*counters,'errors')}
+                result_status = 'completed'
                 with self.connect() as db:
                     db.execute("""INSERT INTO source_scans(run_id,source,status,started_at)
-                                  VALUES(?,?,?,?)""",(run_id,source,'running',now()))
-                self.event(run_id,'fetching',f'Fetching {source}')
+                                  VALUES(?,?,?,?)""",(run_id,source,'running',self.utc_now()))
+                self.event(run_id,'fetching',f'Source {ordinal}/{len(work_sources)}: {source}')
                 try:
                     jobs = self.fetcher(source) if self.fetcher else fetch_source(source,rules)
                     if not isinstance(jobs,list):
-                        raise ValueError('Source returned a non-list response')
+                        raise ValueError('Source returned an invalid result')
                     counts['fetched'] = len(jobs)
-                    self.event(run_id,'fetched',f'{source}: returned {len(jobs)} postings')
-                    for job in jobs:
+                    self._source_progress(run_id,source,counts)
+                    for index,job in enumerate(jobs,1):
                         try:
+                            if not isinstance(job,dict):
+                                raise ValueError('Malformed job')
                             if 'source_error' in job:
                                 counts['errors'] += 1
-                                self.event(run_id,'error',f"{source}: {str(job['source_error'])[:200]}")
+                                self.event(run_id,'error',f"{source}: provider reported a malformed posting")
+                                continue
+                            title = job.get('title')
+                            if not isinstance(title,str) or not title.strip():
+                                raise ValueError('Missing title')
+                            # Do not write thousands of irrelevant careers to SQLite.
+                            # The original fetched figure stays honest: raw API records.
+                            if wanted and not any(term in title.casefold() for term in wanted):
+                                counts['title_filtered'] += 1
                                 continue
                             result = store.import_job({**job,'qualification_rules':rules,
                                                        'intake_run_id':run_id},rules)
                             counts['new_jobs' if result['is_new'] else 'existing_jobs'] += 1
                             decision = result['qualification']['status']
+                            if decision not in ('matched','excluded','needs_full_jd','date_unknown'):
+                                raise ValueError('Invalid qualification status')
                             counts[decision] += 1
                             reasons = result['qualification']['reasons']
+                            if decision == 'excluded' and reasons and 'predates the' in reasons[0]:
+                                counts['too_old'] += 1
                             if reasons:
-                                self.event(run_id,decision,f"{job['title']}: {'; '.join(reasons)}")
+                                # Limit per-posting activity noise while preserving
+                                # exact numeric counters for all decisions.
+                                if counts[decision] <= 12 or decision == 'date_unknown':
+                                    self.event(run_id,decision,f"{title}: {'; '.join(reasons)}")
                                 continue
                             with self.connect() as db:
                                 cursor = db.execute('INSERT OR IGNORE INTO resume_queue(job_id,run_id,snapshot) VALUES(?,?,?)',
@@ -297,35 +328,43 @@ class Service:
                                     db.execute('INSERT INTO outbox(event_key,topic,payload) VALUES(?,?,?)',
                                                ('resume.requested:'+result['job_id'],'resume.requested.v1',json.dumps(payload)))
                                     counts['queued'] += 1
-                                    message = f"#{number} · {job['title']} → waiting for resume"
-                                else:
-                                    message = f"{job['title']}: previously queued; no duplicate"
-                            self.event(run_id,'queued',message)
+                                    message = f"#{number} · {title} → waiting for resume"
+                                    self.event(run_id,'queued',message)
                         except (ValueError,TypeError,KeyError,sqlite3.Error) as exc:
                             counts['errors'] += 1
-                            self.event(run_id,'error',f"{source}: job import failed ({type(exc).__name__})")
+                            self.event(run_id,'error',f'{source}: job import failed ({type(exc).__name__})')
+                        finally:
+                            counts['processed'] += 1
+                            if index % 25 == 0:
+                                self._source_progress(run_id,source,counts)
+                    self.event(run_id,'source_finished',f"{source}: fetched {counts['fetched']}, "
+                        f"title-irrelevant {counts['title_filtered']}, new {counts['new_jobs']}, "
+                        f"previously seen {counts['existing_jobs']}, matched {counts['matched']}, "
+                        f"unknown publication dates {counts['date_unknown']}, "
+                        f"queued {counts['queued']}, errors {counts['errors']}.")
                 except Exception as exc:
-                    status = 'failed'
+                    result_status = 'failed'
                     counts['errors'] += 1
-                    # Do not leak URL query parameters such as Adzuna API keys.
-                    self.event(run_id,'error',f'{source}: provider failed ({type(exc).__name__})')
+                    # Only log safe type / HTTP status, never exception URLs with
+                    # API credential parameters such as Adzuna.
+                    code = getattr(exc,'code',None)
+                    detail = f' HTTP {code}' if isinstance(code,int) else ''
+                    self.event(run_id,'error',f'{source}: provider failed ({type(exc).__name__}{detail})')
                 finally:
-                    if counts['errors'] and status != 'failed':
-                        status = 'completed_with_errors'
+                    if counts['errors'] and result_status != 'failed':
+                        result_status = 'completed_with_errors'
                     failures += counts['errors']
-                    with self.connect() as db:
-                        db.execute("""UPDATE source_scans SET status=?,fetched=?,new_jobs=?,
-                            existing_jobs=?,matched=?,excluded=?,needs_full_jd=?,
-                            queued=?,errors=?,finished_at=? WHERE run_id=? AND source=?""",
-                            (status,*(counts[key] for key in
-                              ('fetched','new_jobs','existing_jobs','matched','excluded','needs_full_jd',
-                               'queued','errors')),now(),run_id,source))
+                    self._source_progress(run_id,source,counts,result_status,finished=True)
                     for key in totals:
                         totals[key] += counts[key]
             status = 'completed_with_errors' if failures else 'completed'
-            self.event(run_id,'finished',f"Scan finished: {totals['fetched']} returned; "
-                       f"{totals['new_jobs']} new; {totals['existing_jobs']} previously seen; "
-                       f"{totals['matched']} matched; {totals['queued']} newly queued; {failures} errors.")
+            self.event(run_id,'finished',
+                f"Scan finished: {totals['fetched']} raw postings, "
+                f"{totals['title_filtered']} unrelated titles skipped, "
+                f"{totals['new_jobs']} new matching-title jobs, "
+                f"{totals['existing_jobs']} previously seen matching-title jobs, "
+                f"{totals['matched']} qualified, {totals['date_unknown']} unverified dates, "
+                f"{totals['queued']} newly queued; {failures} errors.")
         except Exception as exc:
             status = 'failed'
             self.event(run_id,'error',f'Discovery failed ({type(exc).__name__})')
@@ -335,7 +374,7 @@ class Service:
             try:
                 with self.connect() as db:
                     db.execute('UPDATE discovery_runs SET status=?,finished_at=? WHERE id=?',
-                               (locals().get('status','failed'),now(),run_id))
+                               (locals().get('status','failed'),self.utc_now(),run_id))
             finally:
                 self.lock.release()
 
