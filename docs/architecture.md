@@ -175,13 +175,13 @@ model quality. Publish all changes together after these checks pass.
 
 A search excerpt cannot enter Agent 2. To unblock selected leads without relying
 on untrusted automated web extraction, the loopback-only dashboard accepts a
-user-confirmed complete JD through \`POST /api/jobs/enrich\`. Input includes the
+user-confirmed complete JD through `POST /api/jobs/enrich`. Input includes the
 existing 24-character job ID, 300–80,000 characters of pasted description,
-an explicit \`confirmed_complete\` true flag, and an optional canonicalizable
+an explicit `confirmed_complete` true flag, and an optional canonicalizable
 employer URL. No arbitrary network retrieval occurs.
 
 Each newly discovered job now persists the original rules and run ID. Enrichment
-requalifies against those recorded rules under a SQLite \`BEGIN IMMEDIATE\`
+requalifies against those recorded rules under a SQLite `BEGIN IMMEDIATE`
 transaction and updates the job, intake attempt, queue, activity and outbox
 atomically. A failed event insert rolls back the qualification update as well.
 The job ID is stable: the original search identity is not rebound to the optional
@@ -189,8 +189,8 @@ employer URL. Later excerpt-only refreshes preserve the manually supplied JD,
 while re-running qualification against the new search rules. Previously saved
 leads lacking stored rules must be rediscovered before enrichment.
 
-Provenance is \`user_pasted_unverified\`: a checkbox confirms user intent, **not**
+Provenance is `user_pasted_unverified`: a checkbox confirms user intent, **not**
 external truth or a legal eligibility decision. Resumes remain subject to existing
 evidence validation and artifact-specific human approval. Re-enrichment is not
 a way to mutate an already queued immutable resume snapshot; the endpoint only
-accepts \`needs_full_jd\` excerpts.
+accepts `needs_full_jd` excerpts.
