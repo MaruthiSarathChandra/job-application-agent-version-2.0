@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS source_scans(
  new_jobs INTEGER NOT NULL DEFAULT 0, existing_jobs INTEGER NOT NULL DEFAULT 0,
  matched INTEGER NOT NULL DEFAULT 0, excluded INTEGER NOT NULL DEFAULT 0,
  needs_full_jd INTEGER NOT NULL DEFAULT 0, queued INTEGER NOT NULL DEFAULT 0,
+ title_filtered INTEGER NOT NULL DEFAULT 0, processed INTEGER NOT NULL DEFAULT 0,
+ date_unknown INTEGER NOT NULL DEFAULT 0, too_old INTEGER NOT NULL DEFAULT 0,
  errors INTEGER NOT NULL DEFAULT 0, started_at TEXT NOT NULL,
  finished_at TEXT, PRIMARY KEY(run_id,source));
 CREATE TABLE IF NOT EXISTS activity(
@@ -64,6 +66,23 @@ def rules_from_request(body):
             not isinstance(x,str) or not re.fullmatch(r'[A-Za-z]{2}',x) for x in countries):
         raise ValueError('country_codes must be 2-letter country codes, e.g. US')
     rules['country_codes'] = list(dict.fromkeys(x.upper() for x in countries))
+    # Users sometimes enter a country under Exact locations. Country is
+    # already handled by country_codes; retaining it rejects valid US cities.
+    country_names = {'united states': 'US', 'united states of america':'US',
+                     'usa':'US', 'us':'US'}
+    normalized_locations = []
+    for location in rules['locations']:
+        mapped = country_names.get(location.strip().casefold())
+        if mapped:
+            if mapped not in rules['country_codes']:
+                rules['country_codes'].append(mapped)
+        else:
+            normalized_locations.append(location)
+    rules['locations'] = normalized_locations
+    hours = body.get('posted_within_hours', 0)
+    if type(hours) is not int or hours not in (0, 7, 24, 72):
+        raise ValueError('Posting window must be Any, 7 hours, 24 hours, or 3 days')
+    rules['posted_within_hours'] = hours
     return prompt.strip(), rules, validate_sources(body.get('sources'))
 
 
@@ -88,6 +107,10 @@ class Service:
                 db.execute("ALTER TABLE discovery_runs ADD COLUMN trigger TEXT NOT NULL DEFAULT 'manual'")
             if 'finished_at' not in columns:
                 db.execute('ALTER TABLE discovery_runs ADD COLUMN finished_at TEXT')
+            scan_columns = {row[1] for row in db.execute('PRAGMA table_info(source_scans)')}
+            for name in ('title_filtered','processed','date_unknown','too_old'):
+                if name not in scan_columns:
+                    db.execute(f'ALTER TABLE source_scans ADD COLUMN {name} INTEGER NOT NULL DEFAULT 0')
             db.execute("UPDATE discovery_runs SET status='interrupted' WHERE status='running'")
         
     @contextmanager
@@ -181,7 +204,8 @@ class Service:
         rules = config['rules']
         return {'prompt':row['prompt'], 'sources':config['sources'],
                 **{name:rules.get(name,[]) for name in
-                   ('excluded_title_keywords','locations','jd_keywords','country_codes')}}
+                   ('excluded_title_keywords','locations','jd_keywords','country_codes')},
+                'posted_within_hours':rules.get('posted_within_hours',0)}
 
     def scheduled_scan(self, background=True):
         request = self.last_manual_request()
