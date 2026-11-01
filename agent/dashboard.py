@@ -245,6 +245,9 @@ def make_handler(service):
                 self.download_artifact(self.path.split('/')[-2], preview=True)
             elif re.fullmatch(r'/api/artifacts/[a-f0-9]{64}',self.path):
                 self.download_artifact(self.path.rsplit('/',1)[1])
+            elif self.path == '/api/diagnostics':
+                from .diagnostics import report
+                self.reply(200, report(service.database, service.profile_path))
             elif self.path == '/api/state':
                 self.reply(200, service.snapshot())
             else:

@@ -224,13 +224,18 @@ class Worker:
 def main():
     parser = argparse.ArgumentParser(description='Independent GPT resume fact-selection consumer')
     parser.add_argument('--database', default='data/agent.db')
-    parser.add_argument('--profile', required=True, help='Local verified profile JSON; never commit private profile files')
+    parser.add_argument('--profile', default='data/profile.json', help='Local verified profile JSON; never commit private profile files')
     parser.add_argument('--model', default=os.getenv('OPENAI_MODEL'))
     parser.add_argument('--limit', type=int, default=1, help='Maximum tasks processed per invocation')
     parser.add_argument('--artifact-dir', default='artifacts/resumes')
     parser.add_argument('--render-only', action='store_true', help='Package saved drafts without any model calls')
     parser.add_argument('--watch', action='store_true', help='Poll continuously; limit is the total task budget')
+    parser.add_argument('--status', action='store_true', help='Read local queue/profile diagnostics without any API calls')
     args = parser.parse_args()
+    if args.status:
+        from .diagnostics import report
+        print(json.dumps(report(args.database, args.profile), indent=2))
+        return
     try:
         if not args.render_only and (not os.getenv('OPENAI_API_KEY') or not args.model):
             raise ValueError('Set OPENAI_API_KEY and OPENAI_MODEL, or pass --model')
@@ -247,11 +252,16 @@ def main():
         with worker.connect() as db:
             db.executescript(REGEN_SCHEMA)
         regenerator = Regenerator(worker, args.model, args.artifact_dir)
+        print(f'Agent 2 database: {Path(args.database).resolve()}', flush=True)
+        print('Agent 2 profile: '+str(Path(args.profile).resolve())+f" ({len(profile['facts'])} entries)", flush=True)
         count = 0
         while count < args.limit:
             if not args.render_only and regenerator.process_one():
                 count += 1
-                print(f'Regeneration task {count}/{args.limit}; see dashboard for result', flush=True)
+                print(f'Regeneration task {count}/{args.limit}: {regenerator.last_result}', flush=True)
+                if regenerator.last_result.startswith('failed'):
+                    print('Stopped after regeneration failure; fix the reported error before retrying.', flush=True)
+                    break
             elif packager.process_one():
                 count += 1
                 print(f'Packaged task {count}/{args.limit}; see application queue', flush=True)

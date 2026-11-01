@@ -48,6 +48,8 @@ def enqueue(service, sequence):
 class Regenerator:
     def __init__(self, service, model, artifact_dir, generator=call_gpt):
         self.service,self.model,self.artifact_dir,self.generator=service,model,artifact_dir,generator
+        self.last_result = "idle"
+        self.seen_requests = set()
 
     def process_one(self):
         with self.service.connect() as db:
@@ -59,6 +61,10 @@ class Regenerator:
             if not row:
                 return False
             task = dict(row)
+            if task['id'] in self.seen_requests:
+                raise ValueError('Same regeneration request was claimed twice in one worker run; stopped to avoid repeated API calls. Run --status.')
+            self.seen_requests.add(task['id'])
+            self.last_result = 'processing request '+task['id']
             token = str(uuid.uuid4())
             db.execute("UPDATE resume_regenerations SET status='processing',token=?,lease_until=? WHERE id=?",
                        (token,time.time()+300,task['id']))
@@ -77,6 +83,7 @@ class Regenerator:
                 db.execute('BEGIN IMMEDIATE')
                 current=db.execute("SELECT token,status FROM resume_regenerations WHERE id=?",(task['id'],)).fetchone()
                 if current['token']!=token or current['status']!='processing':
+                    self.last_result = 'failed: worker lease changed; result discarded'
                     return True
                 app=db.execute('SELECT * FROM application_queue WHERE job_id=?',(task['job_id'],)).fetchone()
                 old=db.execute('SELECT result FROM resume_drafts WHERE queue_order=?',(task['queue_order'],)).fetchone()
@@ -104,8 +111,10 @@ class Regenerator:
                 db.execute("UPDATE resume_regenerations SET status='completed',token=NULL,lease_until=NULL WHERE id=?",(task['id'],))
                 db.execute('INSERT INTO activity(run_id,kind,message) VALUES(?,?,?)',
                            (task['run_id'],'resume_regenerated',f"#{task['queue_order']}: regenerated resume ready to view"))
+            self.last_result = 'completed request '+task['id']+'; artifact '+artifact['artifact_id'][:12]
         except Exception as exc:
             message=str(exc) if isinstance(exc,ValueError) else 'Resume regeneration failed; previous resume retained'
+            self.last_result = 'failed request '+task['id']+': '+message
             with self.service.connect() as db:
                 db.execute('BEGIN IMMEDIATE')
                 changed=db.execute("UPDATE resume_regenerations SET status='failed',error=?,token=NULL,lease_until=NULL WHERE id=? AND token=?",

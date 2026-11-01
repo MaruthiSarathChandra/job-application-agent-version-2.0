@@ -100,3 +100,24 @@ class RegenerationTests(unittest.TestCase):
             response=client.getresponse();response.read();self.assertEqual(response.status,202)
         finally:
             client.close();server.shutdown();server.server_close();thread.join()
+
+    def test_diagnostics_reports_counts_without_profile_text(self):
+        from agent.diagnostics import report
+        enqueue(self.service,1)
+        result=report(self.service.database,self.service.profile_path)
+        self.assertEqual(result['profile_sections'],{'Skills':1})
+        self.assertEqual(result['regenerations'][0]['status'],'queued')
+        self.assertNotIn('Java and Python',json.dumps(result))
+        self.assertEqual(result['regenerations'][0]['profile_sections'],{'Skills':1})
+
+    def test_repeat_claim_guard_prevents_another_model_call(self):
+        from unittest.mock import Mock
+        identifier=enqueue(self.service,1)
+        generator=Mock(return_value={'ordered_fact_ids':['one'],'missing_requirements':[]})
+        worker=Regenerator(self.service,'test',self.artifacts,generator)
+        worker.process_one()
+        with self.service.connect() as db:
+            db.execute("UPDATE resume_regenerations SET status='queued' WHERE id=?",(identifier,))
+        with self.assertRaisesRegex(ValueError,'claimed twice'):
+            worker.process_one()
+        self.assertEqual(generator.call_count,1)
