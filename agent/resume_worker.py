@@ -243,9 +243,16 @@ def main():
         dependency_check()
         worker = Worker(args.database, profile, version, args.model)
         packager = Packager(args.database, profile, version, args.artifact_dir)
+        from .resume_regeneration import Regenerator, SCHEMA as REGEN_SCHEMA
+        with worker.connect() as db:
+            db.executescript(REGEN_SCHEMA)
+        regenerator = Regenerator(worker, args.model, args.artifact_dir)
         count = 0
         while count < args.limit:
-            if packager.process_one():
+            if not args.render_only and regenerator.process_one():
+                count += 1
+                print(f'Regeneration task {count}/{args.limit}; see dashboard for result', flush=True)
+            elif packager.process_one():
                 count += 1
                 print(f'Packaged task {count}/{args.limit}; see application queue', flush=True)
             elif not args.render_only and worker.process_one():

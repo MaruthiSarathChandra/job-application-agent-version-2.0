@@ -63,7 +63,8 @@ class Service:
         store = IntakeStore(database)
         store.close()
         with self.connect() as db:
-            db.executescript(SCHEMA)
+            from .resume_regeneration import SCHEMA as REGEN_SCHEMA
+            db.executescript(SCHEMA + REGEN_SCHEMA)
             db.execute("UPDATE discovery_runs SET status='interrupted' WHERE status='running'")
         
     @contextmanager
@@ -194,6 +195,7 @@ class Service:
     def snapshot(self):
         with self.connect() as db:
             return {
+                'regenerations': [dict(x) for x in db.execute('SELECT id,queue_order,status,error,created_at FROM resume_regenerations ORDER BY created_at DESC,rowid DESC')],
                 'sources': source_catalog(),
                 'applications': [dict(x) for x in db.execute('SELECT sequence,job_id,resume_artifact_id,status,payload FROM application_queue ORDER BY sequence')] if db.execute("SELECT 1 FROM sqlite_master WHERE name='application_queue'").fetchone() else [],
                 'default_sources': self.default_sources,
@@ -239,6 +241,8 @@ def make_handler(service):
                     self.reply(400, {'error':str(exc)})
             elif self.path == '/api/profile':
                 self.reply(200, service.read_profile())
+            elif re.fullmatch(r'/api/artifacts/[a-f0-9]{64}/preview',self.path):
+                self.download_artifact(self.path.split('/')[-2], preview=True)
             elif re.fullmatch(r'/api/artifacts/[a-f0-9]{64}',self.path):
                 self.download_artifact(self.path.rsplit('/',1)[1])
             elif self.path == '/api/state':
@@ -246,7 +250,7 @@ def make_handler(service):
             else:
                 self.reply(404, {'error': 'Not found'})
 
-        def download_artifact(self, identifier):
+        def download_artifact(self, identifier, preview=False):
             import hashlib
             with service.connect() as db:
                 if not db.execute("SELECT 1 FROM sqlite_master WHERE name='resume_artifacts'").fetchone():
@@ -264,6 +268,12 @@ def make_handler(service):
             if hashlib.sha256(data).hexdigest()!=row['sha256']:
                 self.reply(409, {'error':'Resume artifact checksum failed'})
                 return
+            if preview:
+                from .resume_preview import preview_html
+                self.reply(200, preview_html(data), 'text/html',
+                           {'Content-Security-Policy':"default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'self'",
+                            'X-Frame-Options':'SAMEORIGIN'})
+                return
             self.reply(200,data,'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
                        {'Content-Disposition':f'attachment; filename="resume-{identifier[:12]}.docx"'})
 
@@ -274,7 +284,7 @@ def make_handler(service):
             if host != f'127.0.0.1:{self.server.server_port}' or (origin and origin != f'http://{host}'):
                 self.reply(403, {'error': 'Only same-origin local requests are allowed'})
                 return
-            if self.path not in ('/api/runs', '/api/profile', '/api/profile/import'):
+            if self.path not in ('/api/runs', '/api/profile', '/api/profile/import', '/api/resumes/regenerate'):
                 self.reply(404, {'error': 'Not found'})
                 return
             try:
@@ -290,7 +300,13 @@ def make_handler(service):
                 body = json.loads(raw)
                 if not isinstance(body, dict):
                     raise ValueError('Expected a JSON object')
-                if self.path == '/api/profile':
+                if self.path == '/api/resumes/regenerate':
+                    sequence = body.get('queue_order')
+                    if type(sequence) is not int or sequence < 1:
+                        raise ValueError('Choose a valid resume queue order')
+                    from .resume_regeneration import enqueue
+                    self.reply(202, {'request_id':enqueue(service, sequence)})
+                elif self.path == '/api/profile':
                     self.reply(200, service.save_profile(body))
                 else:
                     self.reply(202, {'run_id': service.start(body)})

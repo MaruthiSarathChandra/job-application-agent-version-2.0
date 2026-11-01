@@ -167,3 +167,30 @@ It supports multiple pages (2,500-word limit); page count is not enforced at run
 The preview includes every saved entry; job-tailored Agent 2 output selects relevant
 groups from that same profile. Existing drafts and generated resumes retain their
 original profile version and are not overwritten by an import.
+
+### Regenerate and view an existing resume
+
+Each completed resume now has **View resume**, **Download checked DOCX**, and
+**Regenerate resume** actions in the pipeline. View opens an escaped HTML reading
+preview of the actual stored DOCX inside the dashboard; Word pagination and exact
+spacing can differ.
+
+Save/import your full profile first. Regenerate queues a fresh GPT selection using
+a snapshot of that saved profile and the job's original JD. Keep Agent 2 running:
+
+```powershell
+python -m agent.resume_worker --profile data/profile.json --watch --limit 10
+```
+
+The limit covers all worker tasks, including ordinary queued jobs; generation uses
+your configured API key/model and incurs API usage. Render-only mode does not
+process regeneration requests. The dashboard shows queued/processing/completed
+or failure states. Repeated clicks cannot enqueue concurrent replacements for the
+same resume. Failed replacements retain the previous artifact, and successful
+ones archive its draft, application payload, and unpublished ready event in
+`resume_revision_history`. Old artifact downloads remain available.
+
+Replacement is supported only before downstream handoff. An already published
+application-ready event is rejected. The current local outbox is replaced
+atomically with the revised artifact; a future broker relay must coordinate with
+application_queue.status and exclude regenerating applications before publication.
