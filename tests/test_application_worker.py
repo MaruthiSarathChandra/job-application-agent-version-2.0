@@ -114,5 +114,28 @@ class Agent3Tests(unittest.TestCase):
         self.assertNotEqual(first['worker_token'],second['worker_token'])
 
 
+    def test_newly_approved_revision_requeues_only_preflight(self):
+        self.approved()
+        worker=Agent3(self.db)
+        self.assertTrue(worker.process_one())
+        self.assertEqual(worker.status()[0]['status'],'awaiting_browser_adapter')
+        # Resume regeneration retracts the prior approval.
+        with self.service.connect() as db:
+            db.execute("UPDATE application_queue SET status='regenerating'")
+        self.assertEqual(worker.status()[0]['status'],'blocked')
+        # An explicit new approval publishes a distinct, validated ready event.
+        with self.service.connect() as db:
+            event=json.loads(db.execute('SELECT payload FROM application_queue').fetchone()['payload'])
+            event['event_id']='replacement-approved-event'
+            db.execute("UPDATE application_queue SET status='ready_for_application',payload=?",
+                       (json.dumps(event),))
+            db.execute("UPDATE outbox SET payload=? WHERE topic='applications.ready.v1'",
+                       (json.dumps(event),))
+        self.assertEqual(worker.status()[0]['status'],'queued')
+        self.assertTrue(worker.process_one())
+        self.assertEqual(worker.status()[0]['status'],'awaiting_browser_adapter')
+        self.assertEqual(len(worker.status()),1)
+
+
 if __name__ == '__main__':
     unittest.main()
