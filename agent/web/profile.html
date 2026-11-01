@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Resume profile · Job Agent</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f4f6fa;color:#17243b;font:15px system-ui,sans-serif}main{max-width:980px;margin:40px auto;padding:0 20px}a{color:#3458ed}h1{margin-bottom:8px}p{line-height:1.6;color:#69768b}.panel{background:white;border:1px solid #e0e6ef;border-radius:12px;padding:24px;margin:20px 0}label{display:block;margin:16px 0 7px;font-weight:600;font-size:13px}input,textarea,select,button{font:inherit}input,textarea,select{width:100%;padding:11px;border:1px solid #ccd5e4;border-radius:6px}textarea{min-height:100px;resize:vertical}button{padding:10px 16px;border:1px solid #ccd5e4;border-radius:7px;background:white;cursor:pointer}button:disabled{opacity:.5;cursor:wait}.primary{background:#3458ed;color:white;border:0}.row{border-top:1px solid #e0e6ef;padding:16px 0;display:grid;gap:10px}.row button{justify-self:end}.check{display:flex;align-items:flex-start;gap:10px;line-height:1.6}.check input{width:auto;margin-top:5px}.actions{display:flex;gap:16px;align-items:center;flex-wrap:wrap}#status{white-space:pre-wrap}small{color:#69768b}button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible{outline:3px solid #91a9ff;outline-offset:2px}
+</style></head><body><main>
+<a href="/">← Job discovery</a><h1>Your resume profile</h1><p>Enter your real experience, education, projects, and skills. Agent 2 selects relevant information from this profile for each job.</p>
+<form id="profile-form">
+<section class="panel"><h2>Personal details</h2>
+<label for="name">Full name</label><input id="name" required maxlength="150" autocomplete="name">
+<label for="contacts">Contact details</label><textarea id="contacts" placeholder="Email, phone, location — one line each" aria-describedby="contact-help"></textarea><small id="contact-help">Up to 5 lines, 200 characters each. These appear in your resume header.</small>
+<h3>Links</h3><p>Add your LinkedIn, GitHub, portfolio, or other professional links.</p><div id="links"></div><button type="button" id="add-link">+ Add link</button>
+</section>
+<section class="panel"><h2>Resume information</h2><p>Add separate entries for each job, project, degree, or skill group. Include employer or project name, title, dates, and accurate accomplishments where relevant.</p><div id="facts"></div><button type="button" id="add-fact">+ Add entry</button></section>
+<section class="panel"><label class="check"><input id="verified" type="checkbox" required><span>I have reviewed these details and confirm they accurately describe my background.</span></label><p>After saving changes, restart Agent 2 to use the updated profile. Existing generated resumes retain their original profile version.</p><div class="actions"><button class="primary" id="save" disabled>Save profile</button><span id="status" role="status" aria-live="polite">Loading profile…</span></div></section>
+</form></main><script>
+const $=id=>document.getElementById(id);
+let revision=null,profileId=null,dirty=false;
+function node(tag,text){const n=document.createElement(tag);if(text)n.textContent=text;return n}
+function markDirty(){dirty=true;$('verified').checked=false}
+function addLink(value={}){
+ const row=node('div');row.className='row';
+ const label=node('input');label.placeholder='Label, e.g. GitHub';label.setAttribute('aria-label','Link label');label.required=true;label.maxLength=100;label.value=value.label||'';
+ const url=node('input');url.type='url';url.placeholder='https://…';url.setAttribute('aria-label','Link URL');url.required=true;url.maxLength=1000;url.value=value.url||'';
+ const remove=node('button','Remove link');remove.type='button';remove.onclick=()=>{row.remove();markDirty()};
+ row.append(label,url,remove);$('links').append(row);
+}
+function addFact(value={}){
+ const row=node('div');row.className='row';row.dataset.id=value.id||crypto.randomUUID();
+ const section=node('select');section.setAttribute('aria-label','Resume section');
+ for(const title of ['Summary','Experience','Projects','Education','Skills']){const option=node('option',title);option.value=title;section.append(option)}section.value=value.section||'Experience';
+ const text=node('textarea');text.required=true;text.maxLength=2000;text.setAttribute('aria-label','Resume entry');text.placeholder='Describe your verified experience, including names and dates.';text.value=value.text||'';
+ const remove=node('button','Remove entry');remove.type='button';remove.onclick=()=>{row.remove();markDirty()};
+ row.append(section,text,remove);$('facts').append(row);
+}
+$('add-link').onclick=()=>{if($('links').children.length>=10)return;addLink();markDirty()};
+$('add-fact').onclick=()=>{if($('facts').children.length>=200)return;addFact();markDirty()};
+$('profile-form').addEventListener('input',e=>{if(e.target.id!=='verified')markDirty()});
+window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue=''}});
+async function load(){
+ try{
+ const response=await fetch('/api/profile');if(!response.ok)throw Error('Cannot load profile. Reload the page to try again.');
+ const data=await response.json();revision=data.revision;const p=data.profile;profileId=p?.profile_id||crypto.randomUUID();
+ if(p){$('name').value=p.resume_header?.display_name||'';$('contacts').value=(p.resume_header?.contact_lines||[]).join('\n');for(const link of p.resume_header?.links||[])addLink(link);for(const fact of p.facts||[])addFact(fact)}
+ else addFact();
+ $('status').textContent=p?'Profile loaded. Review your details before saving.':'No profile yet. Fill in your details to get started.';$('save').disabled=false;
+ }catch(e){$('status').textContent=e.message}
+}
+$('profile-form').onsubmit=async e=>{
+ e.preventDefault();$('save').disabled=true;
+ try{
+ const facts=[...$('facts').children].map(row=>({id:row.dataset.id,section:row.querySelector('select').value,text:row.querySelector('textarea').value.trim(),verified:true}));
+ if(!facts.length)throw Error('Add at least one resume entry.');
+ const links=[...$('links').children].map(row=>{const inputs=row.querySelectorAll('input');return {label:inputs[0].value.trim(),url:inputs[1].value.trim()}});
+ const profile={profile_id:profileId,verified:$('verified').checked,resume_header:{display_name:$('name').value.trim(),contact_lines:$('contacts').value.split('\n').map(x=>x.trim()).filter(Boolean),links},facts};
+ const response=await fetch('/api/profile',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({profile,revision})});
+ const data=await response.json();if(!response.ok)throw Error(data.error||'Could not save profile');
+ revision=data.revision;dirty=false;$('status').textContent='Profile saved. Agent 2 can use it now; restart the worker if it is already running.';
+ }catch(e){$('status').textContent=e.message}finally{$('save').disabled=false}
+};
+load();
+</script></body></html>

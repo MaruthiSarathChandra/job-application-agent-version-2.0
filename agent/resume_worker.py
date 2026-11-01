@@ -28,6 +28,10 @@ CREATE TABLE IF NOT EXISTS consumer_receipts(
 
 def load_profile(path):
     profile = json.loads(Path(path).read_text(encoding='utf-8'))
+    return validate_profile(profile)
+
+
+def validate_profile(profile):
     if not isinstance(profile, dict) or profile.get('verified') is not True:
         raise ValueError('Profile must be explicitly verified before GPT processing')
     if not isinstance(profile.get('profile_id'), str) or not profile['profile_id'].strip():

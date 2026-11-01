@@ -126,3 +126,21 @@ Message fields:
 | resume.sha256 | File fingerprint used to detect changes |
 
 `ready_for_application` means the artifact is available for Agent 3 to inspect and begin its workflow. It does not mean legal/work-authorization eligibility has been assessed, missing requirements have been waived, or submission has been authorized by a new policy. Those decisions remain in the later application module.
+
+### Create your profile in the browser
+
+Start the dashboard with `python -m agent.dashboard`, then choose **Resume profile**
+or open http://127.0.0.1:8765/profile. Enter your name, contact details, professional
+links, and separate resume entries. Review the accuracy checkbox and click **Save
+profile**. You can return to this page to edit your saved details; no JSON editing
+is needed.
+
+The default dashboard saves to `data/profile.json`, which is excluded from Git.
+Run Agent 2 with `python -m agent.resume_worker --profile data/profile.json --limit 1`
+in the terminal with your API key and model configured. Restart an already-running
+worker after profile edits: it keeps the profile version loaded at startup.
+Existing generated resumes are not regenerated automatically.
+
+For a custom database location, the profile defaults to `profile.json` beside the
+database. Override the dashboard save path with `--profile`, and give the worker
+that same path. This form currently edits one local profile.

@@ -6,6 +6,8 @@ import os
 import re
 import sqlite3
 import threading
+import tempfile
+import hashlib
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -51,7 +53,9 @@ def rules_from_request(body):
 
 
 class Service:
-    def __init__(self, database, fetcher=None, default_sources=None):
+    def __init__(self, database, fetcher=None, default_sources=None, profile_path=None):
+        self.profile_path = Path(profile_path) if profile_path else Path(database).parent / "profile.json"
+        self.profile_lock = threading.Lock()
         self.database = database
         self.fetcher = fetcher
         self.default_sources = default_sources or []
@@ -72,6 +76,43 @@ class Service:
                 yield db
         finally:
             db.close()
+
+    def read_profile(self):
+        with self.profile_lock:
+            if not self.profile_path.exists():
+                return {'profile': None, 'revision': None}
+            raw = self.profile_path.read_bytes()
+            return {'profile': json.loads(raw.decode('utf-8')),
+                    'revision': hashlib.sha256(raw).hexdigest()}
+
+    def save_profile(self, body):
+        from .resume_worker import validate_profile
+        profile = body.get('profile')
+        safe, version = validate_profile(profile)
+        if '_resume_header' not in safe:
+            raise ValueError('Please enter your name and resume contact details')
+        # Keep only the validated fields used by the worker.
+        saved = {'profile_id': safe['profile_id'], 'verified': True,
+                 'resume_header': safe['_resume_header'],
+                 'facts': [dict(f, verified=True) for f in safe['facts']]}
+        raw = json.dumps(saved, ensure_ascii=False, indent=2).encode('utf-8')
+        with self.profile_lock:
+            current = hashlib.sha256(self.profile_path.read_bytes()).hexdigest() if self.profile_path.exists() else None
+            if body.get('revision') != current:
+                raise ValueError('Profile changed in another window. Reload before saving.')
+            self.profile_path.parent.mkdir(parents=True, exist_ok=True)
+            name = None
+            try:
+                with tempfile.NamedTemporaryFile(dir=self.profile_path.parent, delete=False) as file:
+                    name = file.name
+                    file.write(raw)
+                    file.flush()
+                    os.fsync(file.fileno())
+                os.replace(name, self.profile_path)
+            finally:
+                if name and os.path.exists(name):
+                    os.unlink(name)
+        return {'revision': hashlib.sha256(raw).hexdigest(), 'profile_version': version}
 
     def event(self, run_id, kind, message):
         with self.connect() as db:
@@ -181,6 +222,10 @@ def make_handler(service):
         def do_GET(self):
             if self.path == '/':
                 self.reply(200, Path(__file__).with_name('web').joinpath('index.html').read_text(encoding='utf-8'), 'text/html')
+            elif self.path == '/profile':
+                self.reply(200, Path(__file__).with_name('web').joinpath('profile.html').read_text(encoding='utf-8'), 'text/html')
+            elif self.path == '/api/profile':
+                self.reply(200, service.read_profile())
             elif re.fullmatch(r'/api/artifacts/[a-f0-9]{64}',self.path):
                 self.download_artifact(self.path.rsplit('/',1)[1])
             elif self.path == '/api/state':
@@ -216,17 +261,23 @@ def make_handler(service):
             if host != f'127.0.0.1:{self.server.server_port}' or (origin and origin != f'http://{host}'):
                 self.reply(403, {'error': 'Only same-origin local requests are allowed'})
                 return
-            if self.path != '/api/runs':
+            if self.path not in ('/api/runs', '/api/profile'):
                 self.reply(404, {'error': 'Not found'})
                 return
             try:
                 length = int(self.headers.get('Content-Length', '0'))
-                if not 0 < length <= 16384:
-                    raise ValueError('Request must be 1–16,384 bytes')
+                maximum = 2_000_000 if self.path == '/api/profile' else 16384
+                if not 0 < length <= maximum:
+                    raise ValueError(f'Request must be 1–{maximum} bytes')
                 body = json.loads(self.rfile.read(length))
                 if not isinstance(body, dict):
                     raise ValueError('Expected a JSON object')
-                self.reply(202, {'run_id': service.start(body)})
+                if self.path == '/api/profile':
+                    self.reply(200, service.save_profile(body))
+                else:
+                    self.reply(202, {'run_id': service.start(body)})
+            except OSError:
+                self.reply(500, {'error': 'Could not save profile. Check local storage permissions.'})
             except (ValueError, TypeError) as exc:
                 self.reply(400, {'error': str(exc)})
     return Handler
@@ -235,6 +286,7 @@ def make_handler(service):
 def main():
     parser = argparse.ArgumentParser(description='Local job discovery dashboard')
     parser.add_argument('--database', default='data/agent.db')
+    parser.add_argument('--profile', help='Profile save path; default: profile.json beside the database')
     parser.add_argument('--port', default=8765, type=int)
     parser.add_argument('--sources-file', help='JSON array of default company-board and market-search sources')
     args = parser.parse_args()
@@ -244,7 +296,7 @@ def main():
     defaults = json.loads(Path(args.sources_file).read_text(encoding='utf-8')) if args.sources_file else []
     if defaults:
         defaults = validate_sources(defaults)
-    service = Service(args.database, default_sources=defaults)
+    service = Service(args.database, default_sources=defaults, profile_path=args.profile)
     server = ThreadingHTTPServer(('127.0.0.1', args.port), make_handler(service))
     print(f'Job dashboard: http://127.0.0.1:{args.port}', flush=True)
     try:
