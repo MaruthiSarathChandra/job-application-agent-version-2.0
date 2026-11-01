@@ -83,9 +83,24 @@ class IntakeStore:
         identity = json.dumps(['requisition', employer, requisition] if employer and requisition
                               else ['url', url], separators=(',', ':'))
         job_id = hashlib.sha256(identity.encode()).hexdigest()[:24]
-        result = qualify(job, requirements)
-        payload = {**job, 'url': url, 'qualification': result}
         with self.connection:
+            self.connection.execute('BEGIN IMMEDIATE')
+            prior = self.connection.execute('SELECT payload FROM jobs WHERE identity_key=?', (identity,)).fetchone()
+            # A repeat market search must not replace a user-confirmed full JD
+            # with a new excerpt. New search rules can still change qualification.
+            if prior and job.get('description_completeness') == 'excerpt':
+                saved = json.loads(prior[0])
+                if (saved.get('description_completeness') == 'user_supplied_full'
+                        and saved.get('description_provenance') == 'user_pasted_unverified'):
+                    job = {**job, 'description': saved['description'],
+                           'description_completeness': 'user_supplied_full',
+                           'description_provenance': 'user_pasted_unverified'}
+                    if saved.get('description_source_url'):
+                        job['discovery_url'] = url
+                        job['description_source_url'] = saved['description_source_url']
+                        url = normalize_url(saved['url'])
+            result = qualify(job, requirements)
+            payload = {**job, 'url': url, 'qualification': result}
             self.connection.execute('''INSERT INTO jobs(id,identity_key,url,ats,payload)
               VALUES(?,?,?,?,?) ON CONFLICT(identity_key) DO UPDATE SET
               url=excluded.url, ats=excluded.ats, payload=excluded.payload,

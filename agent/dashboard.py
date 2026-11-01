@@ -154,7 +154,7 @@ class Service:
                     for job in jobs:
                         try:
                             self.event(run_id, 'reading', f"Reading JD: {job.get('title', 'invalid posting')}")
-                            result = store.import_job(job, rules)
+                            result = store.import_job({**job, 'qualification_rules': rules, 'intake_run_id': run_id}, rules)
                             reasons = result['qualification']['reasons']
                             if reasons:
                                 self.event(run_id, result['qualification']['status'], f"{job['title']}: {'; '.join(reasons)}")
@@ -287,12 +287,13 @@ def make_handler(service):
             if host != f'127.0.0.1:{self.server.server_port}' or (origin and origin != f'http://{host}'):
                 self.reply(403, {'error': 'Only same-origin local requests are allowed'})
                 return
-            if self.path not in ('/api/runs', '/api/profile', '/api/profile/import', '/api/resumes/regenerate', '/api/resumes/approve'):
+            if self.path not in ('/api/runs', '/api/profile', '/api/profile/import', '/api/resumes/regenerate', '/api/resumes/approve', '/api/jobs/enrich'):
                 self.reply(404, {'error': 'Not found'})
                 return
             try:
                 length = int(self.headers.get('Content-Length', '0'))
-                maximum = 2_000_000 if self.path.startswith('/api/profile') else 16384
+                maximum = (2_000_000 if self.path.startswith('/api/profile') else
+                           100_000 if self.path == '/api/jobs/enrich' else 16384)
                 if not 0 < length <= maximum:
                     raise ValueError(f'Request must be 1–{maximum} bytes')
                 raw = self.rfile.read(length)
@@ -303,7 +304,10 @@ def make_handler(service):
                 body = json.loads(raw)
                 if not isinstance(body, dict):
                     raise ValueError('Expected a JSON object')
-                if self.path == '/api/resumes/approve':
+                if self.path == '/api/jobs/enrich':
+                    from .enrichment import enrich_job
+                    self.reply(200, enrich_job(service, body))
+                elif self.path == '/api/resumes/approve':
                     sequence=body.get('queue_order')
                     artifact_id=body.get('artifact_id')
                     if type(sequence) is not int or not isinstance(artifact_id,str):
