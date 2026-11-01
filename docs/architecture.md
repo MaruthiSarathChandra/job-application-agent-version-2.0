@@ -194,3 +194,38 @@ external truth or a legal eligibility decision. Resumes remain subject to existi
 evidence validation and artifact-specific human approval. Re-enrichment is not
 a way to mutate an already queued immutable resume snapshot; the endpoint only
 accepts `needs_full_jd` excerpts.
+
+
+## Agent 3 preflight consumer and OTP mailbox boundary
+
+Agent 3 consumes only `application_queue.status=ready_for_application`
+records with an existing `applications.ready.v1` event. Its private
+`agent3_tasks` table is populated idempotently; BEGIN IMMEDIATE claims have
+tokens, leases and bounded retries. A task is not processed if its resume is
+still `review_required`, being regenerated, or revoked. Preflight verifies
+payload vs event, exact artifact-specific approval, profile version, saved
+bytes/SHA-256 and HTTPS qualified job URL. A successful task is
+`awaiting_browser_adapter`, with a plan explicitly marked
+`submission_performed=false`. No employer API/HTML POST occurs.
+
+The dashboard now displays every packaged application row, not only
+ready rows; the Agent 3 task stage is shown alongside any review blocker.
+The dashboard POST `/api/agent3/preflight` is a same-origin local action
+that executes up to 10 preflights, with no external network access.
+
+Gmail OTP retrieval is isolated behind `agent.gmail_otp`. A separate local
+OAuth Desktop consent uses only the `gmail.readonly` scope, and only the
+`messages.list` and `messages.get` read endpoints. The adapter requires one
+literal sender address, a dedicated label and a timestamp younger than 15
+minutes, checks sender headers and internal message date again, and extracts
+one unambiguous six-digit code from text/plain content. Codes and message
+bodies are never written to SQLite or logs. The Gmail API scope itself can
+read the whole mailbox: sender/label/time are restrictions enforced in our
+code, not by Google's OAuth permissions. An independent mailbox provides
+stronger isolation. Actual ATS OTP consumption is not yet implemented.
+
+Next increment: explicit candidate application-answer schema, browser session
+adapter per ATS (do not assume universal form layout), access-blocker/OTP
+handoff, final user review, durable `submission_pending` before external
+Submit, and reconciliation to `submitted` only after employer confirmation.
+Never retry a timed-out Submit just because a response was lost.
