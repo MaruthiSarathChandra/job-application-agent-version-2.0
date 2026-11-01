@@ -161,8 +161,9 @@ def fetch_source(source, rules, reader=read_json):
     """Market search and direct boards implement the same producer contract."""
     validate_sources([source])
     if source == 'directory:verified':
-        from .company_directory import discovery_sources
+        from .company_directory import discovery_sources, verified_boards
         boards = discovery_sources()
+        proper_names = {mapping['source']:mapping['company'] for mapping in verified_boards().values()}
         if not boards:
             raise ValueError('No verified company ATS boards registered')
         if len(boards) > 20:
@@ -174,7 +175,9 @@ def fetch_source(source, rules, reader=read_json):
                 wanted = rules.get('title_keywords', [])
                 # Keep the 299-company directory practical: it is a job
                 # candidate search, not an all-roles indexing crawler.
-                jobs.extend(row for row in fetched if 'source_error' in row
+                jobs.extend({**row, 'company':proper_names.get(board,row.get('company'))}
+                            if 'source_error' not in row else row
+                            for row in fetched if 'source_error' in row
                             or not wanted or any(term.casefold() in row.get('title','').casefold()
                                                  for term in wanted))
             except Exception as exc:
