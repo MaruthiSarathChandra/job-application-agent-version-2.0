@@ -97,12 +97,12 @@ class SequentialScanTests(unittest.TestCase):
         self.assertEqual(called,self.req['sources'])
         self.assertEqual(state['runs'][0]['status'],'completed_with_errors')
         self.assertEqual(len(state['queue']),2)
-        self.assertEqual(state['saved_stats']['total'],3) # only relevant titles are stored
+        self.assertEqual(state['saved_stats']['total'],4) # all four relevant titles across two good boards
         second=next(x for x in state['source_scans'] if x['source']=='lever:second')
         self.assertEqual((second['fetched'],second['processed'],second['title_filtered']), (4,4,1))
         self.assertEqual((second['matched'],second['date_unknown'],second['too_old'],second['queued']),
                          (1,1,1,1))
-        self.assertEqual(len(state['latest_jobs']),3)
+        self.assertEqual(len(state['latest_jobs']),4)
         self.assertTrue(any(j['qualification']['status']=='date_unknown'
                             for j in state['latest_jobs']))
         self.assertTrue(any(j['qualification']['status']=='excluded'
