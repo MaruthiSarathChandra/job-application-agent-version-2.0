@@ -71,3 +71,31 @@ The renderer uses exact local verified header and fact text, stable ZIP metadata
 The message includes schema_version, event_id, correlation_id, job_id, profile_version, job snapshot with full JD, resume artifact locator/hash/validation, and application_queue_order. The local artifact URI is logical; Agent 3 on the same host uses the database/storage adapter. Multi-host deployment requires a shared storage adapter and broker relay rather than assuming local paths are globally readable.
 
 The dashboard exposes a separate Agent 3 queue and checksum-checked DOCX downloads. There is no Agent 3 consumer, account creation, or browser submission in this increment. Historical draft-only records require their original profile version; header changes must not silently alter candidate identity.
+
+## Grounded writer and review gate (current Agent 2)
+
+New API calls use grounded-writer-v1: a generated summary with source IDs,
+verbatim source-backed skill names, and 2–5 rewritten bullets per selected
+experience/project entry. Source IDs are constrained by the request schema.
+Validation requires every supplied employment entry, at least one project when
+projects exist, and copies education unchanged. Structured role headings, dates
+and original link targets remain local. Numeric checks and evidence references
+are partial checks, not a semantic correctness guarantee.
+
+The renderer checks exact equality against the validated written draft, not
+against the old source prose. It recomputes draft validation against the original
+profile before packaging. A new artifact enters application_queue with
+status=review_required, and does not produce applications.ready.v1 until an
+explicit approval for its exact artifact ID. The Agent 3 view excludes
+unapproved and regenerating entries. This is a local review gate; future
+consumers must enforce status and revision too.
+
+Legacy fact-selection drafts remain supported. Approval is performed through
+the local same-origin API with artifact checksum verification. Regeneration
+revokes the unpublished old ready event after a successful replacement and
+requires a fresh review. Previous artifacts and payloads remain in revision
+history. Already-published handoffs cannot be replaced by this local workflow.
+
+Offline tests exercise structured response validation and the complete local
+pipeline with fixed responses. They do not establish live model quality,
+candidate eligibility, or exact Word pagination.

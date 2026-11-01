@@ -385,17 +385,21 @@ class Packager:
             if task['profile_version']!=self.version:
                 raise ValueError('Draft profile version differs from this worker profile; use the original verified profile')
             draft=json.loads(task['result'])
-            facts={f['id']:f for f in self.profile['facts']}
-            for section in draft['sections']:
-                for fact in section['facts']:
-                    if fact['id'] not in facts or facts[fact['id']]!=fact or fact['section']!=section['title']:
-                        raise ValueError('Draft facts differ from the verified profile')
+            if draft.get('writer_version'):
+                from .resume_writer import validate_draft
+                validate_draft(draft, self.profile)
+            else:
+                facts={f['id']:f for f in self.profile['facts']}
+                for section in draft['sections']:
+                    for fact in section['facts']:
+                        if fact['id'] not in facts or facts[fact['id']]!=fact or fact['section']!=section['title']:
+                            raise ValueError('Draft facts differ from the verified profile')
             artifact=save_artifact(draft,self.profile.get('_resume_header'),self.artifact_dir)
             event={'schema_version':1,'event_id':str(uuid.uuid4()),'correlation_id':draft.get('correlation_id',task['job_id']),
                    'job_id':task['job_id'],'profile_version':self.version,'job':json.loads(task['snapshot']),
                    'resume':{k:v for k,v in artifact.items() if k!='path'},
                    'unsupported_requirements':draft['missing_requirements'],'eligibility_status':'not_assessed',
-                   'status':'ready_for_application'}
+                   'status':'review_required' if draft.get('requires_review') else 'ready_for_application'}
             with self.connect() as db:
                 db.execute('BEGIN IMMEDIATE')
                 changed=db.execute("UPDATE render_tasks SET status='completed',worker_token=NULL,lease_until=NULL,last_error=NULL WHERE queue_order=? AND worker_token=?",(task['queue_order'],task['worker_token']))
@@ -403,14 +407,15 @@ class Packager:
                     raise ValueError('Render lease lost; stale artifact result discarded')
                 db.execute('INSERT OR IGNORE INTO resume_artifacts(id,path,sha256,profile_version,template_version,validation) VALUES(?,?,?,?,?,?)',
                            (artifact['artifact_id'],artifact['path'],artifact['sha256'],self.version,TEMPLATE_VERSION,json.dumps(artifact['validation'])))
-                cursor=db.execute('INSERT INTO application_queue(job_id,resume_artifact_id,payload) VALUES(?,?,?)',
-                                  (task['job_id'],artifact['artifact_id'],json.dumps(event)))
+                cursor=db.execute('INSERT INTO application_queue(job_id,resume_artifact_id,payload,status) VALUES(?,?,?,?)',
+                                  (task['job_id'],artifact['artifact_id'],json.dumps(event),event['status']))
                 event['application_queue_order']=cursor.lastrowid
                 db.execute('UPDATE application_queue SET payload=? WHERE sequence=?',(json.dumps(event),cursor.lastrowid))
-                db.execute('INSERT INTO outbox(event_key,topic,payload) VALUES(?,?,?)',('applications.ready:'+task['job_id'],'applications.ready.v1',json.dumps(event)))
+                if not draft.get('requires_review'):
+                    db.execute('INSERT INTO outbox(event_key,topic,payload) VALUES(?,?,?)',('applications.ready:'+task['job_id'],'applications.ready.v1',json.dumps(event)))
                 db.execute('INSERT INTO consumer_receipts(consumer,event_key) VALUES(?,?)',('resume-packager-v1',task['event_key']))
                 db.execute("UPDATE resume_queue SET status='resume_ready' WHERE sequence=?",(task['queue_order'],))
-                db.execute('INSERT INTO activity(run_id,kind,message) VALUES(?,?,?)',(task['run_id'],'resume_ready',f"#{task['queue_order']}: DOCX checked; queued for Agent 3 (not started)"))
+                db.execute('INSERT INTO activity(run_id,kind,message) VALUES(?,?,?)',(task['run_id'],'resume_ready',f"#{task['queue_order']}: DOCX checked; see resume review status"))
         except Exception as exc:
             message=str(exc) if isinstance(exc,ValueError) else 'DOCX packaging failed; no application-ready event published'
             with self.connect() as db:

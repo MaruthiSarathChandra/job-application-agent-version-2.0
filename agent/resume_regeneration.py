@@ -32,7 +32,7 @@ def enqueue(service, sequence):
         if active:
             return active['id']
         app = db.execute('SELECT * FROM application_queue WHERE job_id=?',(q['job_id'],)).fetchone()
-        if not app or app['status'] != 'ready_for_application':
+        if not app or app['status'] not in ('ready_for_application','review_required'):
             raise ValueError('Resume is already being regenerated or used for an application')
         event = db.execute("SELECT published_at FROM outbox WHERE event_key=?",('applications.ready:'+q['job_id'],)).fetchone()
         if event and event['published_at']:
@@ -99,15 +99,19 @@ class Regenerator:
                          'job_id':task['job_id'],'profile_version':task['profile_version'],'job':job,
                          'resume':{k:v for k,v in artifact.items() if k!='path'},
                          'unsupported_requirements':draft['missing_requirements'],'eligibility_status':'not_assessed',
-                         'status':'ready_for_application','application_queue_order':app['sequence'],
+                         'status':'review_required' if draft.get('requires_review') else 'ready_for_application','application_queue_order':app['sequence'],
                          'revision_id':task['id'],'supersedes_artifact_id':app['resume_artifact_id']}
                 db.execute('UPDATE resume_drafts SET profile_version=?,result=? WHERE queue_order=?',
                            (task['profile_version'],json.dumps(draft),task['queue_order']))
-                db.execute("UPDATE application_queue SET resume_artifact_id=?,payload=?,status='ready_for_application' WHERE job_id=?",
-                           (artifact['artifact_id'],json.dumps(payload),task['job_id']))
+                db.execute("UPDATE application_queue SET resume_artifact_id=?,payload=?,status=? WHERE job_id=?",
+                           (artifact['artifact_id'],json.dumps(payload),payload['status'],task['job_id']))
                 # This local outbox has not been published. Archive its old value above
                 # and replace it atomically with the current application revision.
-                db.execute('UPDATE outbox SET payload=? WHERE event_key=?',(json.dumps(payload),event_key))
+                if draft.get('requires_review'):
+                    db.execute('DELETE FROM outbox WHERE event_key=? AND published_at IS NULL',(event_key,))
+                else:
+                    db.execute('INSERT INTO outbox(event_key,topic,payload) VALUES(?,?,?) ON CONFLICT(event_key) DO UPDATE SET payload=excluded.payload',
+                               (event_key,'applications.ready.v1',json.dumps(payload)))
                 db.execute("UPDATE resume_regenerations SET status='completed',token=NULL,lease_until=NULL WHERE id=?",(task['id'],))
                 db.execute('INSERT INTO activity(run_id,kind,message) VALUES(?,?,?)',
                            (task['run_id'],'resume_regenerated',f"#{task['queue_order']}: regenerated resume ready to view"))
@@ -120,7 +124,9 @@ class Regenerator:
                 changed=db.execute("UPDATE resume_regenerations SET status='failed',error=?,token=NULL,lease_until=NULL WHERE id=? AND token=?",
                                    (message,task['id'],token))
                 if changed.rowcount:
-                    db.execute("UPDATE application_queue SET status='ready_for_application' WHERE job_id=? AND status='regenerating'",(task['job_id'],))
+                    previous=db.execute('SELECT payload FROM application_queue WHERE job_id=?',(task['job_id'],)).fetchone()
+                    previous_status=json.loads(previous['payload']).get('status','ready_for_application')
+                    db.execute("UPDATE application_queue SET status=? WHERE job_id=? AND status='regenerating'",(previous_status,task['job_id']))
                     db.execute('INSERT INTO activity(run_id,kind,message) VALUES(?,?,?)',
                                (task['run_id'],'resume_regeneration_error',message))
         return True

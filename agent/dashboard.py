@@ -287,7 +287,7 @@ def make_handler(service):
             if host != f'127.0.0.1:{self.server.server_port}' or (origin and origin != f'http://{host}'):
                 self.reply(403, {'error': 'Only same-origin local requests are allowed'})
                 return
-            if self.path not in ('/api/runs', '/api/profile', '/api/profile/import', '/api/resumes/regenerate'):
+            if self.path not in ('/api/runs', '/api/profile', '/api/profile/import', '/api/resumes/regenerate', '/api/resumes/approve'):
                 self.reply(404, {'error': 'Not found'})
                 return
             try:
@@ -303,7 +303,14 @@ def make_handler(service):
                 body = json.loads(raw)
                 if not isinstance(body, dict):
                     raise ValueError('Expected a JSON object')
-                if self.path == '/api/resumes/regenerate':
+                if self.path == '/api/resumes/approve':
+                    sequence=body.get('queue_order')
+                    artifact_id=body.get('artifact_id')
+                    if type(sequence) is not int or not isinstance(artifact_id,str):
+                        raise ValueError('Select the exact resume to review')
+                    from .resume_review import approve
+                    self.reply(200, approve(service,sequence,artifact_id))
+                elif self.path == '/api/resumes/regenerate':
                     sequence = body.get('queue_order')
                     if type(sequence) is not int or sequence < 1:
                         raise ValueError('Choose a valid resume queue order')
