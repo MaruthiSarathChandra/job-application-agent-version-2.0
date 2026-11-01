@@ -85,6 +85,8 @@ def fetch_board(source, reader=read_json):
                            location=row.get('location') or 'Unspecified',
                            description=plain(row.get('descriptionPlain') or row.get('descriptionHtml')),
                            requisition_id=row['jobUrl'].rstrip('/').split('/')[-1])
+                if isinstance(row.get('publishedAt'), str):
+                    job['source_posted_at'] = row['publishedAt']
             else:
                 description = row.get('descriptionPlain') or plain(row.get('description'))
                 sections = ' '.join(plain(x.get('text', '') + ' ' + x.get('content', '')) for x in row.get('lists', []))
@@ -151,7 +153,9 @@ def fetch_smartrecruiters(source, rules, reader=read_json):
                          'url':apply_url, 'location':location_label, 'country_code':country,
                          'description':content or 'Full JD unavailable',
                          'description_completeness':'full' if content.strip() else 'excerpt',
-                         'description_provenance':'official_smartrecruiters_public_api'})
+                         'description_provenance':'official_smartrecruiters_public_api',
+                         **({'source_posted_at':detail['releasedDate']}
+                            if isinstance(detail.get('releasedDate'),str) else {})})
         except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
             jobs.append({'source':source,'source_error':f'Invalid public posting detail ({type(exc).__name__})'})
     return jobs
@@ -214,7 +218,9 @@ def fetch_source(source, rules, reader=read_json):
                     location=row.get('location', {}).get('display_name') or 'Unspecified',
                     description=plain(row.get('description')) or 'Full JD unavailable',
                     requisition_id=identifier, employer_key=source, source=source,
-                    description_completeness='excerpt'))
+                    description_completeness='excerpt',
+                    **({'source_posted_at':row['created']}
+                       if isinstance(row.get('created'),str) else {})))
             if len(rows) < 50:
                 break
     return jobs
