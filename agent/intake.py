@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import re
 import sqlite3
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from .freshness import date_decision
 
 
 def normalize_url(value):
@@ -84,8 +85,14 @@ def qualify(job, requirements):
     if job.get('description_completeness') == 'excerpt':
         return {'status': 'needs_full_jd', 'reasons': ['Search excerpt only; retrieve the complete employer JD before qualification'],
                 'scope': 'Not qualified from a search excerpt'}
-    return {'status': 'excluded' if reasons else 'matched', 'reasons': reasons,
-            'scope': 'configured title/location/JD rules only; full eligibility not assessed'}
+    if reasons:
+        return {'status':'excluded', 'reasons':reasons,
+                'scope':'configured title/location/JD rules only; full eligibility not assessed'}
+    age = date_decision(job,requirements)
+    if age:
+        return age
+    return {'status':'matched', 'reasons':[],
+            'scope':'configured title/location/JD/time rules only; full eligibility not assessed'}
 
 
 class IntakeStore:
