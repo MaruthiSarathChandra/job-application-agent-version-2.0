@@ -325,7 +325,20 @@ class Service:
                 'drafts': [dict(x) for x in db.execute('SELECT queue_order,profile_version,result,created_at FROM resume_drafts ORDER BY queue_order')] if db.execute("SELECT 1 FROM sqlite_master WHERE name='resume_drafts'").fetchone() else [],
                 'runs': [dict(x) for x in db.execute('SELECT * FROM discovery_runs ORDER BY created_at DESC,rowid DESC LIMIT 20')],
                 'activity': [dict(x) for x in db.execute('SELECT * FROM activity ORDER BY id DESC LIMIT 200')],
-                'jobs': [dict(id=x['id'], **json.loads(x['payload'])) for x in db.execute('SELECT * FROM jobs ORDER BY updated_at DESC LIMIT 500')],
+                'jobs': [dict(id=x['id'], first_seen_at=x['first_seen_at'],
+                              last_seen_at=x['last_seen_at'], last_run_id=x['last_run_id'],
+                              **json.loads(x['payload']))
+                         for x in db.execute('SELECT * FROM jobs ORDER BY updated_at DESC LIMIT 500')],
+                'source_scans': [dict(x) for x in db.execute('''SELECT * FROM source_scans WHERE run_id=
+                    (SELECT id FROM discovery_runs ORDER BY rowid DESC LIMIT 1)
+                    ORDER BY source''')],
+                'scanner': {
+                    'enabled': self.scan_interval_minutes is not None,
+                    'interval_minutes': self.scan_interval_minutes,
+                    'next_scan_at': (datetime.fromtimestamp(self.next_scan_epoch,timezone.utc)
+                                     .isoformat(timespec='seconds') if self.next_scan_epoch else None),
+                    'has_manual_search': bool(db.execute("SELECT 1 FROM discovery_runs WHERE trigger='manual' LIMIT 1").fetchone()),
+                },
                 'queue': [dict(x) for x in db.execute('SELECT * FROM resume_queue ORDER BY sequence')],
             }
 
@@ -470,6 +483,8 @@ def main():
     parser.add_argument('--profile', help='Profile save path; default: profile.json beside the database')
     parser.add_argument('--port', default=8765, type=int)
     parser.add_argument('--sources-file', help='JSON array of default company-board and market-search sources')
+    parser.add_argument('--scan-every-minutes',type=int,default=0,
+                        help='Opt into periodic scans of the last manual search (5–1440 min); 0 disables scheduling')
     args = parser.parse_args()
     Path(args.database).parent.mkdir(parents=True, exist_ok=True)
     store = IntakeStore(args.database)
@@ -478,6 +493,8 @@ def main():
     if defaults:
         defaults = validate_sources(defaults)
     service = Service(args.database, default_sources=defaults, profile_path=args.profile)
+    if args.scan_every_minutes:
+        service.enable_schedule(args.scan_every_minutes)
     server = ThreadingHTTPServer(('127.0.0.1', args.port), make_handler(service))
     print(f'Job dashboard: http://127.0.0.1:{args.port}', flush=True)
     try:
@@ -485,6 +502,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        service.stop_schedule()
         server.server_close()
 
 
