@@ -407,9 +407,50 @@ must be verified from real responses: offline CI cannot establish those.
 This increment deliberately does not add LinkedIn/Indeed scraping, Gmail,
 Agent 2 resume changes, or Agent 3 submission changes.
 
-**No source-date freshness eligibility filter is enforced yet:** doing so
-while many employer APIs omit publication dates would discard legitimate
-unknown-date postings. Compare first/last observation times and source-provided
-dates in the timeline. Add a separate configurable 7-day filter only after
-verifying real provider date coverage and deciding how unknown dates should
-be treated.
+### Verifiable posting-age filters (7h / 24h / 3d)
+
+In **Start a discovery run**, select one of **7 hours, 24 hours, 3 days**
+or **Any date**. The default for a new browser is **3 days**. The selection
+persists with the exact manual search criteria and is replayed by scheduled
+scans. The backend also accepts `posted_within_hours` values 7, 24, 72, 0.
+
+**Precise semantics:** Strict time filters use *only an employer-supplied,
+timezone-aware publication timestamp*, e.g. Ashby `publishedAt` or
+SmartRecruiters `releasedDate` when it contains a full datetime.
+Greenhouse Job Board API does not guarantee publication time; Lever
+`createdAt` is when a record was created, not publication; Adzuna
+`created` is a provider listing date. The latter three **never become
+invented employer posting dates**. For those sources, matching roles are
+visible with **date_unknown** status but are **not automatically queued**
+under a strict window. Jobs older than the selected window are **excluded**.
+If you instead select **Any date**, the time gate is disabled and otherwise
+qualifying unknown-date jobs can be queued, with no claim that they are recent.
+
+**Relevance first:** The scan still reports raw API return counts honestly.
+Postings without any matching role title are counted as `title_filtered`
+and skipped **before persistence**. Job matching and seniority exclusions
+remain deterministic, driven by the prompt and the separate excluded words
+field. If you enter only `United States` as an **Exact location**, Agent 1
+normalizes that to allowed country `US` rather than incorrectly rejecting
+`San Francisco, CA` as outside the United States. To search nationwide,
+leave Exact locations blank and set Allowed countries to US. A true city
+filter, such as Kansas City, remains enforced.
+
+**Progress:** Sources are fetched one after another. Each source shows raw
+fetched, processed, title skipped, matching-title new/existing records,
+matched/unknown/too old/queued and failure counts. Progress is committed
+after each batch of 25 postings, and one failed provider does not stop
+the remaining providers. The scheduler continues to run periodic scans
+only while Terminal 1 remains open.
+
+**Troubleshooting conflicting Python versions** in the terminal:
+
+```powershell
+python -c "import agent.dashboard as d; print(d.__file__)"
+python -m agent.dashboard --help
+```
+
+If `--scan-every-minutes` is not in the help output, you are running an old
+version from the wrong Git branch/project path. Stop the old dashboard, update
+your local code, and relaunch **only one** instance on port 8765.
+
