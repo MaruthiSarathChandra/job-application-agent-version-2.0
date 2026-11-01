@@ -245,3 +245,22 @@ request and process one task; inspect any checkpoint error before requesting mor
 Structural checks are not a guarantee of factual truth: compare rewritten claims
 with their cited evidence and approve the exact resume before downstream use.
 See `docs/architecture.md` for implemented boundaries and remaining work.
+
+
+### Complete an excerpt-only market lead (no model call)
+
+If an Adzuna lead shows **needs full JD** in **Fetched jobs**, use **Paste complete JD**.
+Copy the complete employer description from its original posting (300–80,000 characters),
+optionally enter the employer's direct HTTP(S) posting URL, and explicitly confirm
+that it is the full description. The dashboard re-runs the *stored search rules*
+against the pasted text and, only if it matches, transactionally creates one
+resume-queue request and one durable event. Nonmatches remain excluded.
+
+The pasted description is **user supplied and not independently verified**.
+Review job provenance, eligibility, and resume claims before any downstream
+application. This workflow does not scrape a website, spend GPT tokens, or submit
+an application. Existing excerpt records without stored rules need one new
+discovery run before they can be enriched. Re-running a market search preserves
+an already-supplied full JD instead of reverting it to a shorter excerpt.
+
+Test locally: \`python -m unittest discover -s tests -v\`.
