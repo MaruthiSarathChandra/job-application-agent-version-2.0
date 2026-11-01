@@ -1,0 +1,18 @@
+{
+  "verified_on": "2026-11-01",
+  "note": "Only confirmed ATS board URLs. Entries in the 299-company careers directory without a verified board are NOT fetched.",
+  "boards": [
+    {
+      "company_id": "cloudflare",
+      "source": "greenhouse:cloudflare",
+      "board_url": "https://job-boards.greenhouse.io/cloudflare",
+      "proof": "https://job-boards.greenhouse.io/cloudflare/jobs/8212060"
+    },
+    {
+      "company_id": "palantir",
+      "source": "lever:palantir",
+      "board_url": "https://jobs.lever.co/palantir",
+      "proof": "https://jobs.lever.co/palantir/6fe5515f-f677-4d98-8ac2-1775a425f5e7"
+    }
+  ]
+}
