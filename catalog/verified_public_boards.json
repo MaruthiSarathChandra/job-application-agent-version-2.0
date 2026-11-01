@@ -1,6 +1,6 @@
 {
   "verified_on": "2026-11-01",
-  "note": "Only confirmed ATS board URLs. Entries in the 299-company careers directory without a verified board are NOT fetched.",
+  "note": "Public ATS board URL mappings for selected companies; careers links for all other companies are not automatically treated as APIs. A mapping does not guarantee postings or a working API response.",
   "boards": [
     {
       "company_id": "cloudflare",
@@ -13,6 +13,62 @@
       "source": "lever:palantir",
       "board_url": "https://jobs.lever.co/palantir",
       "proof": "https://jobs.lever.co/palantir/6fe5515f-f677-4d98-8ac2-1775a425f5e7"
+    },
+    {
+      "company_id": "stripe-us-hq",
+      "source": "greenhouse:stripe",
+      "board_url": "https://job-boards.greenhouse.io/stripe",
+      "proof": "https://job-boards.greenhouse.io/stripe",
+      "verification_note": "Public board URL observed 2026-11-01; API availability and jobs checked at runtime"
+    },
+    {
+      "company_id": "coinbase",
+      "source": "greenhouse:coinbase",
+      "board_url": "https://job-boards.greenhouse.io/coinbase",
+      "proof": "https://job-boards.greenhouse.io/coinbase",
+      "verification_note": "Public board URL observed 2026-11-01; API availability and jobs checked at runtime"
+    },
+    {
+      "company_id": "robinhood",
+      "source": "greenhouse:robinhood",
+      "board_url": "https://job-boards.greenhouse.io/robinhood",
+      "proof": "https://job-boards.greenhouse.io/robinhood",
+      "verification_note": "Public board URL observed 2026-11-01; API availability and jobs checked at runtime"
+    },
+    {
+      "company_id": "airbnb",
+      "source": "greenhouse:airbnb",
+      "board_url": "https://job-boards.greenhouse.io/airbnb",
+      "proof": "https://job-boards.greenhouse.io/airbnb",
+      "verification_note": "Public board URL observed 2026-11-01; API availability and jobs checked at runtime"
+    },
+    {
+      "company_id": "doordash",
+      "source": "greenhouse:doordashusa",
+      "board_url": "https://job-boards.greenhouse.io/doordashusa",
+      "proof": "https://job-boards.greenhouse.io/doordashusa",
+      "verification_note": "Public board URL observed 2026-11-01; API availability and jobs checked at runtime"
+    },
+    {
+      "company_id": "okta",
+      "source": "greenhouse:okta",
+      "board_url": "https://job-boards.greenhouse.io/okta",
+      "proof": "https://job-boards.greenhouse.io/okta",
+      "verification_note": "Public board URL observed 2026-11-01; API availability and jobs checked at runtime"
+    },
+    {
+      "company_id": "block",
+      "source": "greenhouse:block",
+      "board_url": "https://job-boards.greenhouse.io/block",
+      "proof": "https://job-boards.greenhouse.io/block",
+      "verification_note": "Public board URL observed 2026-11-01; API availability and jobs checked at runtime"
+    },
+    {
+      "company_id": "roblox",
+      "source": "greenhouse:roblox",
+      "board_url": "https://job-boards.greenhouse.io/roblox",
+      "proof": "https://job-boards.greenhouse.io/roblox",
+      "verification_note": "Public board URL observed 2026-11-01; API availability and jobs checked at runtime"
     }
   ]
 }
