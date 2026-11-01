@@ -1,5 +1,6 @@
 """Deterministic intake domain; no browser, LLM, or credentials required."""
 import hashlib
+from datetime import datetime, timezone
 import re
 import sqlite3
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -101,6 +102,12 @@ class IntakeStore:
             result TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
           PRAGMA user_version=1;
         ''')
+        # Additive migration: legacy jobs retain unknown first-seen history.
+        columns = {row[1] for row in self.connection.execute('PRAGMA table_info(jobs)')}
+        for name in ('first_seen_at', 'last_seen_at'):
+            if name not in columns:
+                self.connection.execute(f'ALTER TABLE jobs ADD COLUMN {name} TEXT')
+        self.connection.commit()
 
     def import_job(self, job, requirements):
         import json
@@ -114,6 +121,7 @@ class IntakeStore:
         identity = json.dumps(['requisition', employer, requisition] if employer and requisition
                               else ['url', url], separators=(',', ':'))
         job_id = hashlib.sha256(identity.encode()).hexdigest()[:24]
+        checked_at = datetime.now(timezone.utc).isoformat(timespec='seconds')
         with self.connection:
             self.connection.execute('BEGIN IMMEDIATE')
             prior = self.connection.execute('SELECT payload FROM jobs WHERE identity_key=?', (identity,)).fetchone()
@@ -132,14 +140,15 @@ class IntakeStore:
                         url = normalize_url(saved['url'])
             result = qualify(job, requirements)
             payload = {**job, 'url': url, 'qualification': result}
-            self.connection.execute('''INSERT INTO jobs(id,identity_key,url,ats,payload)
-              VALUES(?,?,?,?,?) ON CONFLICT(identity_key) DO UPDATE SET
+            self.connection.execute('''INSERT INTO jobs(id,identity_key,url,ats,payload,first_seen_at,last_seen_at)
+              VALUES(?,?,?,?,?,?,?) ON CONFLICT(identity_key) DO UPDATE SET
               url=excluded.url, ats=excluded.ats, payload=excluded.payload,
+              last_seen_at=excluded.last_seen_at,
               updated_at=CURRENT_TIMESTAMP''',
-              (job_id, identity, url, detect_ats(url), json.dumps(payload)))
+              (job_id, identity, url, detect_ats(url), json.dumps(payload),checked_at,checked_at))
             self.connection.execute('INSERT INTO intake_attempts(job_id,result) VALUES(?,?)',
                                     (job_id, json.dumps(result)))
-        return {'job_id': job_id, 'ats': detect_ats(url), **payload}
+        return {'job_id': job_id, 'ats': detect_ats(url), 'is_new':prior is None, **payload}
 
     def close(self):
         self.connection.close()
