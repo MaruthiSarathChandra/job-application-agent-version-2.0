@@ -264,3 +264,64 @@ discovery run before they can be enriched. Re-running a market search preserves
 an already-supplied full JD instead of reverting it to a shorter excerpt.
 
 Test locally: `python -m unittest discover -s tests -v`.
+
+
+## Agent 3, increment 1: approved queue preflight and restricted-behavior Gmail OTP read
+
+The **Agent 3 queue** tab now shows *all packaged resumes*, including
+**review required** items previously hidden by the UI filter. If the tab is empty,
+Agent 2 has not successfully packaged a resume in the **same local SQLite database**.
+Run `python -m agent.resume_worker --profile data/profile.json --limit 1`
+with your already-configured API key/model, or use `--render-only` to package
+an existing saved draft without another model request. Review the actual DOCX
+and **approve the exact artifact** before any Agent 3 task can be created.
+
+Agent 3 preflight can be started by clicking **Check approved jobs** on the
+dashboard, or from a second terminal:
+
+```powershell
+python -m agent.application_worker --database data/agent.db --limit 10
+python -m agent.application_worker --database data/agent.db --status
+```
+
+It reads only approved `applications.ready.v1` handoffs and verifies the job
+snapshot, profile version, approval ID, stored resume bytes and SHA-256 before
+preparing a durable application plan. Concurrency claims and bounded retries
+prevent duplicate preparations. Current completed preflight status is
+`awaiting_browser_adapter`, **not submitted**. No employer form is filled,
+no account created, no application is submitted and no job is marked applied.
+Provider-specific ATS browser adapters, answer mappings, submission confirmation,
+CAPTCHA/manual blockers and uncertain-submit reconciliation are next increments.
+This is a safe foundation, not a finished unattended application bot.
+
+### Optional Gmail authorization for OTP checking (separate local consent)
+
+Gmail is **not required** to run Agent 3 preflight. It should only be used
+after an employer's sign-in/verification flow requests an OTP.
+
+```powershell
+python -m pip install -r requirements-gmail.txt
+python -m agent.gmail_otp --connect --client-secrets credentials/gmail-client.json
+python -m agent.gmail_otp --sender otp@employer.example --label JobAgentOTP --requested-at <unix-seconds>
+```
+
+Create a Google Cloud **OAuth Desktop app** client, enable Gmail API, and
+download client JSON to the gitignored local `credentials/` folder. Google
+user consent is required and OAuth might require a configured testing user.
+Do **not** upload client secrets, OAuth token files, or OTPs to GitHub/chat.
+The last command reports only whether an eligible code was found, not its value.
+For an actual employer flow, supply its exact expected sender and request timestamp;
+the sender above is only a placeholder. A dedicated Gmail filter should label
+appropriate incoming verification emails with `JobAgentOTP`.
+
+**Important Gmail permission boundary:** Google's `gmail.readonly` OAuth
+scope grants read access to the mailbox, not only OTP messages. Our code
+intentionally limits reads to exact sender + dedicated label + 15-minute window
+and never sends, modifies or deletes mail, but that is an **application-side
+restriction**, not a provider-enforced OTP-only permission. Use a dedicated
+verification mailbox if you require provider-level isolation. Linking Gmail
+inside ChatGPT does not automatically authorize this separate local Python app.
+Gmail OTP retrieval is not yet wired to an ATS browser adapter; it is an
+isolated, offline-tested reader module.
+
+Run `python -m unittest discover -s tests -v` to execute the regression suite.
