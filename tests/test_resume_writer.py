@@ -39,7 +39,7 @@ class WriterTests(unittest.TestCase):
         self.assertIn('https://example.com/project',draft['sections'][3]['facts'][0]['text'])
         self.assertTrue(draft['requires_review'])
         schema=request({},p,'test')['text']['format']['schema']
-        self.assertEqual(schema['properties']['entries']['items']['properties']['source_id']['enum'],['work','project','degree'])
+        self.assertEqual(schema['properties']['entries']['items']['properties']['source_id']['enum'],['work','project'])
 
     def test_invalid_sources_missing_sections_numbers_and_tampering(self):
         p,r=fixture()
@@ -86,3 +86,16 @@ class WriterTests(unittest.TestCase):
             self.assertEqual(service.snapshot()['applications'][0]['status'],'review_required')
             with service.connect() as db:
                 self.assertEqual(db.execute("SELECT count(*) FROM outbox WHERE topic='applications.ready.v1'").fetchone()[0],0)
+            # An invalid replacement remains inspectable and never replaces the last good artifact.
+            from agent.resume_checkpoint import inspect
+            previous=service.snapshot()['applications'][0]['resume_artifact_id']
+            enqueue(service,1)
+            invalid=copy.deepcopy(result);invalid['entries'][0]['bullets']=[]
+            Regenerator(service,'fixture',root/'resumes',lambda *args:invalid).process_one()
+            self.assertEqual(service.snapshot()['applications'][0]['resume_artifact_id'],previous)
+            checkpoint=inspect(service.database)['checkpoints'][0]
+            self.assertEqual(checkpoint['validation_status'],'failed')
+            self.assertEqual(inspect(service.database,checkpoint['id'])['entries'][0]['bullet_count'],0)
+            with service.connect() as db:
+                self.assertEqual(db.execute("SELECT count(*) FROM outbox WHERE topic='applications.ready.v1'").fetchone()[0],0)
+

@@ -30,6 +30,9 @@ def report(database, profile_path):
                 item={k:row[k] for k in ('id','queue_order','status','error','lease_until','profile_version')}
                 item['profile_sections']=dict(Counter(f['section'] for f in json.loads(row['profile'])['facts']))
                 result['regenerations'].append(item)
+        if 'resume_generation_checkpoints' in tables:
+            result['generation_checkpoints']=[dict(r) for r in db.execute(
+                'SELECT id,task_key,validation_status,error,created_at FROM resume_generation_checkpoints ORDER BY rowid DESC LIMIT 10')]
         return result
     finally:
         db.close()

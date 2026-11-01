@@ -215,3 +215,33 @@ Offline validation covers profile → writer response validation → DOCX → HT
 preview → approval → application-ready event and regeneration. It uses fixed
 model-response fixtures, not a live model evaluation. Live quality still requires
 one controlled API call with the user's profile and JD.
+
+### Resume generation checkpoints and bullet errors
+
+Agent 2 now uses one consistent 1–5 bullet contract. A short source can produce one
+supported bullet instead of padding the resume. Errors identify the entry/source
+and actual bullet count. Saved v1 drafts remain readable.
+
+Completed JSON responses are saved locally **before validation**. Both initial and
+replacement processing reuse the saved response when the same request is retried;
+a validation failure does not cause another model call for that request. Clicking
+Regenerate creates a new request and may incur a new API charge.
+
+Inspect saved responses without credentials or a running worker:
+
+```powershell
+python -m agent.resume_checkpoint --database data/agent.db
+python -m agent.resume_checkpoint --database data/agent.db --id <checkpoint-id>
+```
+
+The second command reports entry bullet counts and runs current validation against
+the saved evidence. It does not change queues, approve a resume or call GPT.
+`--status` and `/api/diagnostics` also include recent checkpoint metadata.
+Failures from versions before checkpoint storage cannot be replayed.
+
+After pulling the bundled update, restart the dashboard and worker. Review the
+saved profile first. For an old failed regeneration, create one new regeneration
+request and process one task; inspect any checkpoint error before requesting more.
+Structural checks are not a guarantee of factual truth: compare rewritten claims
+with their cited evidence and approve the exact resume before downstream use.
+See `docs/architecture.md` for implemented boundaries and remaining work.

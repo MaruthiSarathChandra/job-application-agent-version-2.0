@@ -179,8 +179,9 @@ class Worker:
                 raise ValueError('Unsupported or mismatched resume request event')
             if event['job'].get('description_completeness') == 'excerpt' or event['job'].get('qualification', {}).get('status') != 'matched':
                 raise ValueError('Resume request does not contain a fully qualified JD')
-            selection = self.generator(event['job'], self.profile, self.model)
-            draft = validate_result(selection, self.profile)
+            from .resume_checkpoint import generate_and_validate
+            draft = generate_and_validate(self, 'initial:'+task['job_id'], event['job'],
+                                          self.profile, self.model, self.generator)
             draft.update(job_id=task['job_id'], queue_order=task['sequence'], profile_version=self.version,
                          model=self.model, schema_version=1, event_id=str(uuid.uuid4()),
                          correlation_id=event.get('correlation_id', task['job_id']))

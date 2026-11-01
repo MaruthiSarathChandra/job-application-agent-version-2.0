@@ -73,8 +73,9 @@ class Regenerator:
         try:
             profile=json.loads(task['profile'])
             job=json.loads(task['snapshot'])
-            selection=self.generator(job,profile,self.model)
-            draft=validate_result(selection,profile)
+            from .resume_checkpoint import generate_and_validate
+            draft=generate_and_validate(self.service, 'regeneration:'+task['id'], job,
+                                        profile, self.model, self.generator)
             draft.update(job_id=task['job_id'],queue_order=task['queue_order'],
                          profile_version=task['profile_version'],model=self.model,
                          schema_version=1,event_id=str(uuid.uuid4()),correlation_id=task['job_id'])

@@ -99,3 +99,73 @@ history. Already-published handoffs cannot be replaced by this local workflow.
 Offline tests exercise structured response validation and the complete local
 pipeline with fixed responses. They do not establish live model quality,
 candidate eligibility, or exact Word pagination.
+
+## Agent 2 reliability boundary (grounded-writer-v2)
+
+The acceptance target is evidence traceability and an explicitly reviewed artifact,
+not a percentage claim of AI accuracy. Structural conformance, factual meaning,
+job relevance and document layout are different checks.
+
+Implemented flow:
+
+```mermaid
+flowchart TD
+    Q[Resume request and verified profile snapshot] --> G[Grounded generation]
+    G --> C[Durable JSON checkpoint]
+    C --> V{Validation}
+    V -->|Fail| F[Error with source ID and checkpoint ID]
+    F --> D[Offline inspection]
+    V -->|Pass| R[Deterministic DOCX rendering]
+    R --> H{Artifact-specific human review}
+    H -->|Approved| O[Application queue and outbox]
+    H -->|Revise| N[Explicit regeneration request]
+    N --> G
+```
+
+Responsibilities:
+
+- Profile: user verifies source evidence; employer/title/date anchors and education
+  remain local. The model receives professional facts, not the local contact header.
+- Writer: selects relevant content and rewrites only within the cited entry's scope.
+  One to five bullets are permitted. A sparse fact must not be padded to meet a
+  two-bullet quota. Entry IDs in the schema only include Experience and Projects.
+- Contract: schema and validator share array limits. Shape validation is combined
+  with existing reference, exact-skill, numeric, employment coverage and project
+  coverage checks. Length and semantic rules still require local checks/review.
+- Checkpoint: parsed JSON output and its source snapshot are committed before
+  validation. Initial generation and regeneration share this boundary. A request key
+  includes logical task, job, professional profile, model and writer version.
+  Reprocessing the same request revalidates the saved response without another
+  model call. A new explicit regeneration request is a separate paid operation.
+- Inspection: `python -m agent.resume_checkpoint --database data/agent.db` lists
+  checkpoint metadata. Add `--id UUID` to inspect entry counts and revalidate using
+  current code. This is read-only: it never publishes, approves or regenerates.
+- Rendering/review: existing deterministic renderer, checksum validation and
+  artifact-specific approval remain. Failed replacements retain the old artifact.
+  Only approved new writer artifacts publish `applications.ready.v1`.
+
+Migration is additive: the checkpoint table is created on first generation; no
+existing profile, queue or artifact is deleted. Old v1 written drafts retain their
+original validation version. Old failures have no checkpoint and cannot be recovered.
+Checkpoints live in the private local database; do not commit or share that database.
+
+Limitations: citations and numeric checks cannot prove semantic truth. Human review
+remains required. This increment does not implement an independent semantic critic,
+a fact-level claim editor, PDF pagination verification or a multi-host Kafka broker.
+Parsed completed JSON is checkpointed; network errors, incomplete/refused responses
+and malformed JSON are not recoverable checkpoints. A crash after the provider has
+responded but before the SQLite commit may require another call. Existing leases
+protect task ownership; this is not exactly-once provider billing.
+
+Next architecture increment, after this foundation is evaluated: normalized claim
+records (employer/project scope, exact evidence, dates, skills and metrics), a
+requirement-to-claim map, bullet-level evidence and a side-by-side correction UI.
+An optional semantic verifier may flag unsupported paraphrases but cannot replace
+source verification or artifact approval. Evaluate on redacted representative
+profiles/JDs with a human-scored claim checklist before enabling it by default.
+
+Release criteria for this increment: array boundary tests, failed-response replay
+without a generator call, snapshot isolation, read-only offline inspection, old
+writer-version compatibility, failed replacement retention, review-gated outbox,
+and the existing end-to-end tests. Synthetic tests validate mechanics, not live
+model quality. Publish all changes together after these checks pass.
