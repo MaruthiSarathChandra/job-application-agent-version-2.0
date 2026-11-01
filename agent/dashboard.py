@@ -9,6 +9,8 @@ import threading
 import tempfile
 import hashlib
 import uuid
+import time
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -19,6 +21,14 @@ SCHEMA = '''
 CREATE TABLE IF NOT EXISTS discovery_runs(
  id TEXT PRIMARY KEY, prompt TEXT NOT NULL, config TEXT NOT NULL,
  status TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS source_scans(
+ run_id TEXT NOT NULL REFERENCES discovery_runs(id), source TEXT NOT NULL,
+ status TEXT NOT NULL DEFAULT 'running', fetched INTEGER NOT NULL DEFAULT 0,
+ new_jobs INTEGER NOT NULL DEFAULT 0, existing_jobs INTEGER NOT NULL DEFAULT 0,
+ matched INTEGER NOT NULL DEFAULT 0, excluded INTEGER NOT NULL DEFAULT 0,
+ needs_full_jd INTEGER NOT NULL DEFAULT 0, queued INTEGER NOT NULL DEFAULT 0,
+ errors INTEGER NOT NULL DEFAULT 0, started_at TEXT NOT NULL,
+ finished_at TEXT, PRIMARY KEY(run_id,source));
 CREATE TABLE IF NOT EXISTS activity(
  id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL,
  kind TEXT NOT NULL, message TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
@@ -65,11 +75,19 @@ class Service:
         self.fetcher = fetcher
         self.default_sources = default_sources or []
         self.lock = threading.Lock()
+        self.scan_interval_minutes = None
+        self.next_scan_epoch = None
+        self._scan_stop = threading.Event()
         store = IntakeStore(database)
         store.close()
         with self.connect() as db:
             from .resume_regeneration import SCHEMA as REGEN_SCHEMA
             db.executescript(SCHEMA + REGEN_SCHEMA)
+            columns = {row[1] for row in db.execute('PRAGMA table_info(discovery_runs)')}
+            if 'trigger' not in columns:
+                db.execute("ALTER TABLE discovery_runs ADD COLUMN trigger TEXT NOT NULL DEFAULT 'manual'")
+            if 'finished_at' not in columns:
+                db.execute('ALTER TABLE discovery_runs ADD COLUMN finished_at TEXT')
             db.execute("UPDATE discovery_runs SET status='interrupted' WHERE status='running'")
         
     @contextmanager
@@ -124,7 +142,9 @@ class Service:
         with self.connect() as db:
             db.execute('INSERT INTO activity(run_id,kind,message) VALUES(?,?,?)', (run_id, kind, message))
 
-    def start(self, body, background=True):
+    def start(self, body, background=True, trigger='manual'):
+        if trigger not in ('manual', 'scheduled'):
+            raise ValueError('Unknown scan trigger')
         body = dict(body)
         if not body.get('sources'):
             body['sources'] = self.default_sources or (['adzuna:us'] if os.getenv('ADZUNA_APP_ID') and os.getenv('ADZUNA_APP_KEY') else [])
@@ -134,8 +154,8 @@ class Service:
         run_id = str(uuid.uuid4())
         try:
             with self.connect() as db:
-                db.execute('INSERT INTO discovery_runs(id,prompt,config,status) VALUES(?,?,?,?)',
-                           (run_id, prompt, json.dumps({'rules': rules, 'sources': sources}), 'running'))
+                db.execute('INSERT INTO discovery_runs(id,prompt,config,status,trigger) VALUES(?,?,?,?,?)',
+                           (run_id, prompt, json.dumps({'rules': rules, 'sources': sources}), 'running',trigger))
             if background:
                 threading.Thread(target=self.run, args=(run_id, rules, sources), daemon=True).start()
             else:
@@ -146,58 +166,152 @@ class Service:
             raise
         return run_id
 
+    @staticmethod
+    def utc_now():
+        return datetime.now(timezone.utc).isoformat(timespec='seconds')
+
+    def last_manual_request(self):
+        """Use the exact last manual request. No guessed filters or locations."""
+        with self.connect() as db:
+            row = db.execute("""SELECT prompt,config FROM discovery_runs WHERE trigger='manual'
+                                ORDER BY rowid DESC LIMIT 1""").fetchone()
+        if not row:
+            return None
+        config = json.loads(row['config'])
+        rules = config['rules']
+        return {'prompt':row['prompt'], 'sources':config['sources'],
+                **{name:rules.get(name,[]) for name in
+                   ('excluded_title_keywords','locations','jd_keywords','country_codes')}}
+
+    def scheduled_scan(self, background=True):
+        request = self.last_manual_request()
+        if request is None:
+            return None
+        return self.start(request,background=background,trigger='scheduled')
+
+    def enable_schedule(self, every_minutes):
+        """Opt-in periodic discovery; only runs while this dashboard is running."""
+        if type(every_minutes) is not int or not 5 <= every_minutes <= 1440:
+            raise ValueError('Schedule must be 5–1440 minutes')
+        if self.scan_interval_minutes is not None:
+            raise ValueError('Scanner already enabled')
+        self.scan_interval_minutes = every_minutes
+        self.next_scan_epoch = time.time() + every_minutes*60
+        self._scan_stop.clear()
+        thread = threading.Thread(target=self._scheduler_loop,daemon=True,name='job-discovery-scheduler')
+        thread.start()
+        self._scan_thread = thread
+
+    def _scheduler_loop(self):
+        seconds = self.scan_interval_minutes*60
+        while not self._scan_stop.wait(seconds):
+            self.next_scan_epoch = time.time()+seconds
+            try:
+                run_id = self.scheduled_scan()
+                if run_id is None:
+                    print('Automatic discovery skipped: run a manual search first',flush=True)
+            except ValueError as exc:
+                print(f'Automatic discovery skipped: {exc}',flush=True)
+
+    def stop_schedule(self):
+        self._scan_stop.set()
+        self.next_scan_epoch = None
+        self.scan_interval_minutes = None
+
     def run(self, run_id, rules, sources):
         store = None
-        errors = 0
+        failures = 0
+        totals = {'fetched':0, 'new_jobs':0, 'existing_jobs':0,
+                  'matched':0, 'excluded':0, 'needs_full_jd':0, 'queued':0}
+        now = self.utc_now
         try:
             store = IntakeStore(self.database)
+            # "directory:verified" is a search group. Report individual
+            # verified boards even when they return zero or fail.
+            from .company_directory import discovery_sources
+            work_sources = []
             for source in sources:
-                self.event(run_id, 'fetching', f'Fetching {source}')
+                work_sources.extend(discovery_sources() if source == 'directory:verified' else [source])
+            work_sources = list(dict.fromkeys(work_sources))
+            for source in work_sources:
+                counts = {key:0 for key in (*totals, 'errors')}
+                status = 'completed'
+                with self.connect() as db:
+                    db.execute("""INSERT INTO source_scans(run_id,source,status,started_at)
+                                  VALUES(?,?,?,?)""",(run_id,source,'running',now()))
+                self.event(run_id,'fetching',f'Fetching {source}')
                 try:
-                    jobs = self.fetcher(source) if self.fetcher else fetch_source(source, rules)
-                    self.event(run_id, 'fetched', f'{source}: fetched {len(jobs)} postings')
+                    jobs = self.fetcher(source) if self.fetcher else fetch_source(source,rules)
+                    if not isinstance(jobs,list):
+                        raise ValueError('Source returned a non-list response')
+                    counts['fetched'] = len(jobs)
+                    self.event(run_id,'fetched',f'{source}: returned {len(jobs)} postings')
                     for job in jobs:
                         try:
                             if 'source_error' in job:
-                                errors += 1
-                                self.event(run_id, 'error', f"{job.get('source', source)}: {job['source_error']}")
+                                counts['errors'] += 1
+                                self.event(run_id,'error',f"{source}: {str(job['source_error'])[:200]}")
                                 continue
-                            self.event(run_id, 'reading', f"Reading JD: {job.get('title', 'invalid posting')}")
-                            result = store.import_job({**job, 'qualification_rules': rules, 'intake_run_id': run_id}, rules)
+                            result = store.import_job({**job,'qualification_rules':rules,
+                                                       'intake_run_id':run_id},rules)
+                            counts['new_jobs' if result['is_new'] else 'existing_jobs'] += 1
+                            decision = result['qualification']['status']
+                            counts[decision] += 1
                             reasons = result['qualification']['reasons']
                             if reasons:
-                                self.event(run_id, result['qualification']['status'], f"{job['title']}: {'; '.join(reasons)}")
+                                self.event(run_id,decision,f"{job['title']}: {'; '.join(reasons)}")
                                 continue
                             with self.connect() as db:
                                 cursor = db.execute('INSERT OR IGNORE INTO resume_queue(job_id,run_id,snapshot) VALUES(?,?,?)',
-                                                    (result['job_id'], run_id, json.dumps(result)))
+                                                    (result['job_id'],run_id,json.dumps(result)))
                                 if cursor.rowcount:
                                     number = cursor.lastrowid
-                                    payload = {'schema_version': 1, 'event_id': str(uuid.uuid4()), 'correlation_id': result['job_id'], 'queue_order': number, 'job_id': result['job_id'],
-                                               'job': result, 'status': 'resume_waiting'}
+                                    payload = {'schema_version':1, 'event_id':str(uuid.uuid4()),
+                                               'correlation_id':result['job_id'],'queue_order':number,
+                                               'job_id':result['job_id'],'job':result,
+                                               'status':'resume_waiting'}
                                     db.execute('INSERT INTO outbox(event_key,topic,payload) VALUES(?,?,?)',
-                                               ('resume.requested:' + result['job_id'], 'resume.requested.v1', json.dumps(payload)))
+                                               ('resume.requested:'+result['job_id'],'resume.requested.v1',json.dumps(payload)))
+                                    counts['queued'] += 1
                                     message = f"#{number} · {job['title']} → waiting for resume"
                                 else:
-                                    message = f"{job['title']}: already queued; duplicate skipped"
-                            self.event(run_id, 'queued', message)
-                        except (ValueError, TypeError, KeyError) as exc:
-                            errors += 1
-                            self.event(run_id, 'error', str(exc))
+                                    message = f"{job['title']}: previously queued; no duplicate"
+                            self.event(run_id,'queued',message)
+                        except (ValueError,TypeError,KeyError,sqlite3.Error) as exc:
+                            counts['errors'] += 1
+                            self.event(run_id,'error',f"{source}: job import failed ({type(exc).__name__})")
                 except Exception as exc:
-                    errors += 1
-                    self.event(run_id, 'error', f'{source}: {type(exc).__name__}: {exc}')
-            status = 'completed_with_errors' if errors else 'completed'
-            self.event(run_id, 'finished', 'Discovery finished. Qualified jobs are available to the independent resume worker.')
+                    status = 'failed'
+                    counts['errors'] += 1
+                    # Do not leak URL query parameters such as Adzuna API keys.
+                    self.event(run_id,'error',f'{source}: provider failed ({type(exc).__name__})')
+                finally:
+                    if counts['errors'] and status != 'failed':
+                        status = 'completed_with_errors'
+                    failures += counts['errors']
+                    with self.connect() as db:
+                        db.execute("""UPDATE source_scans SET status=?,fetched=?,new_jobs=?,
+                            existing_jobs=?,matched=?,excluded=?,needs_full_jd=?,
+                            queued=?,errors=?,finished_at=? WHERE run_id=? AND source=?""",
+                            (status,*(counts[key] for key in
+                              ('fetched','new_jobs','existing_jobs','matched','excluded','needs_full_jd',
+                               'queued','errors')),now(),run_id,source))
+                    for key in totals:
+                        totals[key] += counts[key]
+            status = 'completed_with_errors' if failures else 'completed'
+            self.event(run_id,'finished',f"Scan finished: {totals['fetched']} returned; "
+                       f"{totals['new_jobs']} new; {totals['existing_jobs']} previously seen; "
+                       f"{totals['matched']} matched; {totals['queued']} newly queued; {failures} errors.")
         except Exception as exc:
             status = 'failed'
-            self.event(run_id, 'error', f'{type(exc).__name__}: {exc}')
+            self.event(run_id,'error',f'Discovery failed ({type(exc).__name__})')
         finally:
             if store:
                 store.close()
             try:
                 with self.connect() as db:
-                    db.execute('UPDATE discovery_runs SET status=? WHERE id=?', (locals().get('status', 'failed'), run_id))
+                    db.execute('UPDATE discovery_runs SET status=?,finished_at=? WHERE id=?',
+                               (locals().get('status','failed'),now(),run_id))
             finally:
                 self.lock.release()
 
