@@ -15,14 +15,15 @@ class DirectoryTests(unittest.TestCase):
         self.assertEqual(len({x['id'] for x in companies}),299)
         self.assertEqual(len({x['career_url'] for x in companies}),296)
         self.assertEqual(sum(c['category']=='Technology' for c in companies),44)
-        self.assertEqual(len(verified_boards()),2)
+        self.assertEqual(len(verified_boards()),10)
         item=list_companies(query='Cloudflare')
         self.assertEqual(item['matched_companies'],1)
         self.assertEqual(item['companies'][0]['board_source'],'greenhouse:cloudflare')
         unknown=list_companies(query='Microsoft')
         self.assertEqual(unknown['matched_companies'],1)
         self.assertFalse(unknown['companies'][0]['board_verified'])
-        self.assertEqual(discovery_sources(),['greenhouse:cloudflare','lever:palantir'])
+        self.assertEqual(len(discovery_sources()),10)
+        self.assertEqual(discovery_sources()[:2],['greenhouse:cloudflare','lever:palantir'])
 
     def test_dangerous_or_incorrect_ats_mapping_rejected(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -54,7 +55,7 @@ class DirectoryTests(unittest.TestCase):
             seen.append(url)
             if 'boards-api.greenhouse.io' in url:
                 return {'jobs':[{'id':1,'title':'Backend Software Engineer','location':{'name':'Remote - US'},
-                                 'absolute_url':'https://job-boards.greenhouse.io/cloudflare/jobs/1',
+                                 'absolute_url':'https://job-boards.greenhouse.io/'+url.split('/boards/')[1].split('/jobs')[0]+'/jobs/1',
                                  'content':'<p>Spring Boot APIs</p>'}]}
             if 'api.lever.co' in url:
                 return [{'id':'abc','text':'Backend Software Engineer',
@@ -62,16 +63,17 @@ class DirectoryTests(unittest.TestCase):
                          'categories':{'location':'New York, NY'},'descriptionPlain':'Build REST APIs'}]
             raise AssertionError('Unexpected API host: '+url)
         result=fetch_source('directory:verified',{'title_keywords':['Backend Software Engineer']},reader)
-        self.assertEqual(len(result),2)
-        self.assertEqual({x['source'] for x in result},
-                         {'greenhouse:cloudflare','lever:palantir'})
-        self.assertEqual(len(seen),2)
+        self.assertEqual(len(result),10)
+        self.assertEqual({x['source'] for x in result},set(discovery_sources()))
+        self.assertEqual(len(seen),10)
         self.assertTrue(all(x['description'] for x in result))
 
     def test_one_failed_board_does_not_hide_other_jobs(self):
         def reader(url):
-            if 'boards-api.greenhouse.io' in url:
+            if '/cloudflare/' in url:
                 raise OSError('unavailable')
+            if 'boards-api.greenhouse.io' in url:
+                return {'jobs': []}
             return []
         rows=fetch_source('directory:verified',{'title_keywords':['Engineer']},reader)
         self.assertEqual(len(rows),1)
