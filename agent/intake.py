@@ -104,7 +104,7 @@ class IntakeStore:
         ''')
         # Additive migration: legacy jobs retain unknown first-seen history.
         columns = {row[1] for row in self.connection.execute('PRAGMA table_info(jobs)')}
-        for name in ('first_seen_at', 'last_seen_at'):
+        for name in ('first_seen_at', 'last_seen_at', 'last_run_id'):
             if name not in columns:
                 self.connection.execute(f'ALTER TABLE jobs ADD COLUMN {name} TEXT')
         self.connection.commit()
@@ -140,12 +140,13 @@ class IntakeStore:
                         url = normalize_url(saved['url'])
             result = qualify(job, requirements)
             payload = {**job, 'url': url, 'qualification': result}
-            self.connection.execute('''INSERT INTO jobs(id,identity_key,url,ats,payload,first_seen_at,last_seen_at)
-              VALUES(?,?,?,?,?,?,?) ON CONFLICT(identity_key) DO UPDATE SET
+            self.connection.execute('''INSERT INTO jobs(id,identity_key,url,ats,payload,first_seen_at,last_seen_at,last_run_id)
+              VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(identity_key) DO UPDATE SET
               url=excluded.url, ats=excluded.ats, payload=excluded.payload,
-              last_seen_at=excluded.last_seen_at,
+              last_seen_at=excluded.last_seen_at, last_run_id=excluded.last_run_id,
               updated_at=CURRENT_TIMESTAMP''',
-              (job_id, identity, url, detect_ats(url), json.dumps(payload),checked_at,checked_at))
+              (job_id, identity, url, detect_ats(url), json.dumps(payload),checked_at,checked_at,
+               job.get('intake_run_id')))
             self.connection.execute('INSERT INTO intake_attempts(job_id,result) VALUES(?,?)',
                                     (job_id, json.dumps(result)))
         return {'job_id': job_id, 'ats': detect_ats(url), 'is_new':prior is None, **payload}
