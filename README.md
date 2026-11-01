@@ -410,7 +410,7 @@ Agent 2 resume changes, or Agent 3 submission changes.
 ### Verifiable posting-age filters (7h / 24h / 3d)
 
 In **Start a discovery run**, select one of **7 hours, 24 hours, 3 days**
-or **Any date**. The default for a new browser is **3 days**. The selection
+or **Any date**. The default for a new browser is **Any date**, because many public boards do not provide a trustworthy publication timestamp; strict windows are user-selectable. The selection
 persists with the exact manual search criteria and is replayed by scheduled
 scans. The backend also accepts `posted_within_hours` values 7, 24, 72, 0.
 
