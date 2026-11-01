@@ -46,8 +46,11 @@ def qualify(job, requirements):
     locations = requirements.get('locations', [])
     if locations and job['location'].casefold() not in [x.casefold() for x in locations]:
         reasons.append('Location is outside configured locations')
+    for term in requirements.get('jd_keywords', []):
+        if term.casefold() not in job.get('description', '').casefold():
+            reasons.append(f'JD missing required phrase: {term}')
     return {'status': 'excluded' if reasons else 'matched', 'reasons': reasons,
-            'scope': 'configured title/location rules only; full eligibility not assessed'}
+            'scope': 'configured title/location/JD rules only; full eligibility not assessed'}
 
 
 class IntakeStore:

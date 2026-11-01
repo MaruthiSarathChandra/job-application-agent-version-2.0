@@ -17,7 +17,7 @@ def main():
         requirements = json.loads(Path(args.requirements).read_text(encoding='utf-8'))
         if not isinstance(job, dict) or not isinstance(requirements, dict):
             raise ValueError('Job and requirements must be JSON objects')
-        allowed = {'title_keywords', 'excluded_title_keywords', 'locations'}
+        allowed = {'title_keywords', 'excluded_title_keywords', 'locations', 'jd_keywords'}
         if set(requirements) - allowed:
             raise ValueError('Unsupported requirement key; refusing to ignore a rule')
         if any(not isinstance(v, list) or any(not isinstance(x, str) or not x.strip() for x in v)
