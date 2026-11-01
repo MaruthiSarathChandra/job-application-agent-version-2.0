@@ -381,7 +381,24 @@ class Service:
 
     def snapshot(self):
         with self.connect() as db:
+            latest = db.execute('SELECT id FROM discovery_runs ORDER BY rowid DESC LIMIT 1').fetchone()
+            latest_id = latest['id'] if latest else ''
+            def row_job(x):
+                return dict(id=x['id'], first_seen_at=x['first_seen_at'],
+                            last_seen_at=x['last_seen_at'], last_run_id=x['last_run_id'],
+                            **json.loads(x['payload']))
+            saved_stats = {'total':db.execute('SELECT COUNT(*) FROM jobs').fetchone()[0]}
+            for status in ('matched','excluded','needs_full_jd','date_unknown'):
+                saved_stats[status] = db.execute(
+                    "SELECT COUNT(*) FROM jobs WHERE json_extract(payload,'$.qualification.status')=?",
+                    (status,)).fetchone()[0]
             return {
+                'saved_stats':saved_stats,
+                'latest_jobs_count':db.execute('SELECT COUNT(*) FROM jobs WHERE last_run_id=?',
+                                               (latest_id,)).fetchone()[0],
+                'latest_jobs':[row_job(x) for x in db.execute(
+                    'SELECT * FROM jobs WHERE last_run_id=? ORDER BY updated_at DESC LIMIT 250',
+                    (latest_id,))],
                 'regenerations': [dict(x) for x in db.execute('SELECT id,queue_order,status,error,created_at FROM resume_regenerations ORDER BY created_at DESC,rowid DESC')],
                 'sources': source_catalog(),
                 'applications': [dict(x) for x in db.execute('SELECT sequence,job_id,resume_artifact_id,status,payload FROM application_queue ORDER BY sequence')] if db.execute("SELECT 1 FROM sqlite_master WHERE name='application_queue'").fetchone() else [],
@@ -389,10 +406,8 @@ class Service:
                 'drafts': [dict(x) for x in db.execute('SELECT queue_order,profile_version,result,created_at FROM resume_drafts ORDER BY queue_order')] if db.execute("SELECT 1 FROM sqlite_master WHERE name='resume_drafts'").fetchone() else [],
                 'runs': [dict(x) for x in db.execute('SELECT * FROM discovery_runs ORDER BY created_at DESC,rowid DESC LIMIT 20')],
                 'activity': [dict(x) for x in db.execute('SELECT * FROM activity ORDER BY id DESC LIMIT 200')],
-                'jobs': [dict(id=x['id'], first_seen_at=x['first_seen_at'],
-                              last_seen_at=x['last_seen_at'], last_run_id=x['last_run_id'],
-                              **json.loads(x['payload']))
-                         for x in db.execute('SELECT * FROM jobs ORDER BY updated_at DESC LIMIT 500')],
+                'jobs':[row_job(x) for x in db.execute(
+                    'SELECT * FROM jobs ORDER BY updated_at DESC LIMIT 300')],
                 'source_scans': [dict(x) for x in db.execute('''SELECT * FROM source_scans WHERE run_id=
                     (SELECT id FROM discovery_runs ORDER BY rowid DESC LIMIT 1)
                     ORDER BY source''')],
