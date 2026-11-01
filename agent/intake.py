@@ -1,8 +1,10 @@
 """Deterministic intake domain; no browser, LLM, or credentials required."""
 import hashlib
+from datetime import datetime, timezone
 import re
 import sqlite3
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from .freshness import date_decision
 
 
 def normalize_url(value):
@@ -83,8 +85,14 @@ def qualify(job, requirements):
     if job.get('description_completeness') == 'excerpt':
         return {'status': 'needs_full_jd', 'reasons': ['Search excerpt only; retrieve the complete employer JD before qualification'],
                 'scope': 'Not qualified from a search excerpt'}
-    return {'status': 'excluded' if reasons else 'matched', 'reasons': reasons,
-            'scope': 'configured title/location/JD rules only; full eligibility not assessed'}
+    if reasons:
+        return {'status':'excluded', 'reasons':reasons,
+                'scope':'configured title/location/JD rules only; full eligibility not assessed'}
+    age = date_decision(job,requirements)
+    if age:
+        return age
+    return {'status':'matched', 'reasons':[],
+            'scope':'configured title/location/JD/time rules only; full eligibility not assessed'}
 
 
 class IntakeStore:
@@ -101,6 +109,12 @@ class IntakeStore:
             result TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
           PRAGMA user_version=1;
         ''')
+        # Additive migration: legacy jobs retain unknown first-seen history.
+        columns = {row[1] for row in self.connection.execute('PRAGMA table_info(jobs)')}
+        for name in ('first_seen_at', 'last_seen_at', 'last_run_id'):
+            if name not in columns:
+                self.connection.execute(f'ALTER TABLE jobs ADD COLUMN {name} TEXT')
+        self.connection.commit()
 
     def import_job(self, job, requirements):
         import json
@@ -114,6 +128,7 @@ class IntakeStore:
         identity = json.dumps(['requisition', employer, requisition] if employer and requisition
                               else ['url', url], separators=(',', ':'))
         job_id = hashlib.sha256(identity.encode()).hexdigest()[:24]
+        checked_at = datetime.now(timezone.utc).isoformat(timespec='seconds')
         with self.connection:
             self.connection.execute('BEGIN IMMEDIATE')
             prior = self.connection.execute('SELECT payload FROM jobs WHERE identity_key=?', (identity,)).fetchone()
@@ -132,14 +147,16 @@ class IntakeStore:
                         url = normalize_url(saved['url'])
             result = qualify(job, requirements)
             payload = {**job, 'url': url, 'qualification': result}
-            self.connection.execute('''INSERT INTO jobs(id,identity_key,url,ats,payload)
-              VALUES(?,?,?,?,?) ON CONFLICT(identity_key) DO UPDATE SET
+            self.connection.execute('''INSERT INTO jobs(id,identity_key,url,ats,payload,first_seen_at,last_seen_at,last_run_id)
+              VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(identity_key) DO UPDATE SET
               url=excluded.url, ats=excluded.ats, payload=excluded.payload,
+              last_seen_at=excluded.last_seen_at, last_run_id=excluded.last_run_id,
               updated_at=CURRENT_TIMESTAMP''',
-              (job_id, identity, url, detect_ats(url), json.dumps(payload)))
+              (job_id, identity, url, detect_ats(url), json.dumps(payload),checked_at,checked_at,
+               job.get('intake_run_id')))
             self.connection.execute('INSERT INTO intake_attempts(job_id,result) VALUES(?,?)',
                                     (job_id, json.dumps(result)))
-        return {'job_id': job_id, 'ats': detect_ats(url), **payload}
+        return {'job_id': job_id, 'ats': detect_ats(url), 'is_new':prior is None, **payload}
 
     def close(self):
         self.connection.close()

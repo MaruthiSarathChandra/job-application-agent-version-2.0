@@ -6,6 +6,7 @@ from urllib.parse import urlencode
 import re
 from html.parser import HTMLParser
 from urllib.request import Request, build_opener, HTTPRedirectHandler
+from datetime import datetime, timezone
 
 
 class Text(HTMLParser):
@@ -78,6 +79,8 @@ def fetch_board(source, reader=read_json):
                 job = dict(url=row['absolute_url'], title=row['title'],
                            location=row.get('location', {}).get('name') or 'Unspecified',
                            description=plain(row.get('content')), requisition_id=str(row['id']))
+                if isinstance(row.get('updated_at'),str):
+                    job['source_updated_at'] = row['updated_at']  # NOT a posted-at timestamp
             elif provider == 'ashby':
                 if row.get('isListed') is False:
                     continue
@@ -85,6 +88,8 @@ def fetch_board(source, reader=read_json):
                            location=row.get('location') or 'Unspecified',
                            description=plain(row.get('descriptionPlain') or row.get('descriptionHtml')),
                            requisition_id=row['jobUrl'].rstrip('/').split('/')[-1])
+                if isinstance(row.get('publishedAt'), str):
+                    job['source_posted_at'] = row['publishedAt']
             else:
                 description = row.get('descriptionPlain') or plain(row.get('description'))
                 sections = ' '.join(plain(x.get('text', '') + ' ' + x.get('content', '')) for x in row.get('lists', []))
@@ -92,6 +97,16 @@ def fetch_board(source, reader=read_json):
                            location=row.get('categories', {}).get('location') or 'Unspecified',
                            description=plain(description + ' ' + sections + ' ' + (row.get('additionalPlain') or '')),
                            requisition_id=str(row['id']))
+            if provider == 'lever':
+                # Lever createdAt/updatedAt are creation/update, NOT publishing.
+                for field,target in (('createdAt','source_created_at'),('updatedAt','source_updated_at')):
+                    value = row.get(field)
+                    if type(value) is int and 0 <= value <= 9999999999999:
+                        try:
+                            job[target] = datetime.fromtimestamp(
+                                value/1000, timezone.utc).isoformat(timespec='seconds')
+                        except (ValueError,OverflowError,OSError):
+                            pass
             jobs.append({**job, 'company': company, 'employer_key': source, 'source': source})
         except (KeyError, TypeError, AttributeError) as exc:
             jobs.append({'source_error': f'Malformed posting: {type(exc).__name__}'})
@@ -151,7 +166,9 @@ def fetch_smartrecruiters(source, rules, reader=read_json):
                          'url':apply_url, 'location':location_label, 'country_code':country,
                          'description':content or 'Full JD unavailable',
                          'description_completeness':'full' if content.strip() else 'excerpt',
-                         'description_provenance':'official_smartrecruiters_public_api'})
+                         'description_provenance':'official_smartrecruiters_public_api',
+                         **({'source_posted_at':detail['releasedDate']}
+                            if isinstance(detail.get('releasedDate'),str) else {})})
         except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
             jobs.append({'source':source,'source_error':f'Invalid public posting detail ({type(exc).__name__})'})
     return jobs
@@ -214,7 +231,11 @@ def fetch_source(source, rules, reader=read_json):
                     location=row.get('location', {}).get('display_name') or 'Unspecified',
                     description=plain(row.get('description')) or 'Full JD unavailable',
                     requisition_id=identifier, employer_key=source, source=source,
-                    description_completeness='excerpt'))
+                    description_completeness='excerpt',
+                    # Adzuna created is when the aggregator listed it; that
+                    # does not prove the employer's publication instant.
+                    **({'source_listed_at':row['created']}
+                       if isinstance(row.get('created'),str) else {})))
             if len(rows) < 50:
                 break
     return jobs
