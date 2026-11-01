@@ -135,7 +135,7 @@ def fetch_smartrecruiters(source, rules, reader=read_json):
             detail = reader(f'{base}/{identifier}')
             sections = ((detail.get('jobAd') or {}).get('sections') or {})
             content = ' '.join(plain(sections.get(field, {}).get('text'))
-                               for field in ('jobDescription','qualifications','additionalInformation'))
+                               for field in ('jobDescription','qualifications','additionalInformation')).strip()
             location = detail.get('location') or row.get('location') or {}
             if not isinstance(location, dict):
                 raise ValueError('Invalid location record')
