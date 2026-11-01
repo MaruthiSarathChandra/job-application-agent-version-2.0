@@ -139,6 +139,15 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(service.snapshot()['queue'], [])
         self.assertEqual(service.snapshot()['runs'][0]['status'], 'completed_with_errors')
 
+    def test_discovery_ui_warns_about_stale_single_company_source(self):
+        html = Path(__file__).resolve().parent.parent.joinpath('agent/web/index.html').read_text(encoding='utf-8')
+        self.assertIn("const DEMO_SOURCE='greenhouse:greenhouse'", html)
+        self.assertIn("Use verified company feeds", html)
+        self.assertIn("if(sourceChoiceWarning())throw Error", html)
+        self.assertIn("saved.sources=['directory:verified']", html)
+        self.assertIn("state.default_sources.join(', ')", html)
+        self.assertIn("sourceChoiceWarning();refresh()", html)
+
     def test_lever_paginates(self):
         calls = []
         item = {'id':'1','text':'Engineer','hostedUrl':'https://jobs.lever.co/example/1',
