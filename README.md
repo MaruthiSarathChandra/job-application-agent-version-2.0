@@ -83,7 +83,7 @@ The limit is a task-attempt budget, not a successful-draft count. Without --watc
 
 The independent worker consumes queued `resume.requested.v1` events, leases one task at a time, calls GPT through the OpenAI Responses API, validates returned fact IDs, and atomically records a draft, acknowledgement, and `resume.drafted.v1` event. The dashboard's **GPT drafts** tab shows the selection. Agent 2 then renders the DOCX and publishes it to the **Agent 3 queue** tab. Failures are visible, backed off, and retried at most three times. Expired leases can be recovered by another worker. If a process crashes after an API response but before saving, the API call may be repeated and billed again; only the local result/acknowledgement is deduplicated.
 
-GPT selects/orders verified facts and reports unsupported job requirements. Agent 2 renders the exact supplied fact text into a Times New Roman DOCX with bold headings and configured links. There is no generated prose rewriting or PDF output yet. Runtime checks are structural/content checks; page count and candidate-specific visual layout are not automatically verified. No account creation or application submission is enabled. Keys never belong in the browser, Git, screenshots, or activity logs.
+GPT selects/orders verified facts and reports unsupported job requirements. Agent 2 renders the exact supplied fact text into a Calibri DOCX with bold headings and configured links. There is no generated prose rewriting or PDF output yet. Runtime checks are structural/content checks; page count and candidate-specific visual layout are not automatically verified. No account creation or application submission is enabled. Keys never belong in the browser, Git, screenshots, or activity logs.
 
 The browser and worker communicate through the local durable outbox/queue, not this ChatGPT conversation. A Kafka relay can later replace the transport behind this event contract. The profile hash is saved with every draft; only verified facts are sent to the model, not arbitrary profile/contact fields.
 
@@ -109,7 +109,7 @@ The resume header is kept local; only professional facts are sent to GPT. The pr
 
 DOCX artifacts default to `artifacts/resumes`, configurable with `--artifact-dir`. This is a local-storage adapter: agents on this machine share the same database and artifact directory. For different hosts, replace it with shared artifact storage; `local://` is a logical locator, not a web-accessible URL. The dashboard offers checked DOCX downloads by artifact ID and rejects downloads if the stored checksum fails.
 
-The built-in template uses Letter paper, Times New Roman 11-point body text, a 17-point centered name, bold section headings, and clickable verified links. A 650-word content budget prevents unbounded output; it does not prove a one-page layout. A representative one-page fixture was rendered and visually inspected during development. Runtime validation checks ZIP integrity, exact facts/header text, all link targets, and typography; `page_count_verified` remains false in the outgoing message.
+The built-in template uses Letter paper, Calibri 11-point body text, a 17-point centered name, bold section headings, and clickable verified links. A 2,500-word content budget prevents unbounded output; it does not prove a one-page layout. A representative one-page fixture was rendered and visually inspected during development. Runtime validation checks ZIP integrity, exact facts/header text, all link targets, and typography; `page_count_verified` remains false in the outgoing message.
 
 Missing credentials/profile/header or dependencies stop before model use. Worker errors and render errors are recorded separately. A rendering failure, profile mismatch, changed fact, or failed outgoing-event transaction never creates an application-ready queue entry. Files are atomically saved under content hashes before the outgoing DB transaction. Failed transactions can leave harmless unreferenced files, reserved for future garbage collection.
 
@@ -144,3 +144,26 @@ Existing generated resumes are not regenerated automatically.
 For a custom database location, the profile defaults to `profile.json` beside the
 database. Override the dashboard save path with `--profile`, and give the worker
 that same path. This form currently edits one local profile.
+
+### Import your standard resume and preview its layout
+
+On **Resume profile**, choose your existing paragraph-based DOCX (up to 2 MB)
+and click **Import DOCX for review**. Import fills the form without saving,
+verifying claims, or calling GPT. Review the entries, headline, dates, section
+assignments, and links; confirm accuracy and save.
+
+Imported experience and project entries retain their heading, metadata, bullets,
+and hyperlink targets as a single selectable group. When editing an imported
+entry, keep its paragraph count; to restructure it, remove it and add a fresh
+entry. Import currently recognizes Summary, Technical Skills, Professional
+Experience, Selected Engineering Projects, Education, and their common short
+headings. Tables are rejected rather than silently skipped.
+
+**Download saved profile resume** produces a full-profile DOCX with no model
+call and no application-queue event. The compact reference template uses Calibri,
+a centered name/headline/contact block, blue uppercase section headings and rules,
+bold role/project headings, bullets, and right-aligned tabbed dates/links.
+It supports multiple pages (2,500-word limit); page count is not enforced at runtime.
+The preview includes every saved entry; job-tailored Agent 2 output selects relevant
+groups from that same profile. Existing drafts and generated resumes retain their
+original profile version and are not overwritten by an import.

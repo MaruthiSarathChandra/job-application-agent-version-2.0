@@ -4,14 +4,15 @@
 *{box-sizing:border-box}body{margin:0;background:#f4f6fa;color:#17243b;font:15px system-ui,sans-serif}main{max-width:980px;margin:40px auto;padding:0 20px}a{color:#3458ed}h1{margin-bottom:8px}p{line-height:1.6;color:#69768b}.panel{background:white;border:1px solid #e0e6ef;border-radius:12px;padding:24px;margin:20px 0}label{display:block;margin:16px 0 7px;font-weight:600;font-size:13px}input,textarea,select,button{font:inherit}input,textarea,select{width:100%;padding:11px;border:1px solid #ccd5e4;border-radius:6px}textarea{min-height:100px;resize:vertical}button{padding:10px 16px;border:1px solid #ccd5e4;border-radius:7px;background:white;cursor:pointer}button:disabled{opacity:.5;cursor:wait}.primary{background:#3458ed;color:white;border:0}.row{border-top:1px solid #e0e6ef;padding:16px 0;display:grid;gap:10px}.row button{justify-self:end}.check{display:flex;align-items:flex-start;gap:10px;line-height:1.6}.check input{width:auto;margin-top:5px}.actions{display:flex;gap:16px;align-items:center;flex-wrap:wrap}#status{white-space:pre-wrap}small{color:#69768b}button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible{outline:3px solid #91a9ff;outline-offset:2px}
 </style></head><body><main>
 <a href="/">← Job discovery</a><h1>Your resume profile</h1><p>Enter your real experience, education, projects, and skills. Agent 2 selects relevant information from this profile for each job.</p>
+<section class="panel"><h2>Import an existing resume</h2><p>Upload your standard DOCX to fill this form, including role headings, bullets, and project links. Review it before saving. Import replaces the entries currently shown in this form; your saved profile stays unchanged until you save.</p><input id="resume-file" type="file" accept=".docx" aria-label="Resume DOCX"><button id="import-resume" type="button">Import DOCX for review</button><p id="import-status" role="status"></p></section>
 <form id="profile-form">
 <section class="panel"><h2>Personal details</h2>
 <label for="name">Full name</label><input id="name" required maxlength="150" autocomplete="name">
-<label for="contacts">Contact details</label><textarea id="contacts" placeholder="Email, phone, location — one line each" aria-describedby="contact-help"></textarea><small id="contact-help">Up to 5 lines, 200 characters each. These appear in your resume header.</small>
+<label for="headline">Professional headline</label><input id="headline" maxlength="300" placeholder="Software Engineer | Java | Python | Backend"><label for="contacts">Contact details</label><textarea id="contacts" placeholder="Email, phone, location — one line each" aria-describedby="contact-help"></textarea><small id="contact-help">Up to 5 lines, 200 characters each. These appear in your resume header.</small>
 <h3>Links</h3><p>Add your LinkedIn, GitHub, portfolio, or other professional links.</p><div id="links"></div><button type="button" id="add-link">+ Add link</button>
 </section>
 <section class="panel"><h2>Resume information</h2><p>Add separate entries for each job, project, degree, or skill group. Include employer or project name, title, dates, and accurate accomplishments where relevant.</p><div id="facts"></div><button type="button" id="add-fact">+ Add entry</button></section>
-<section class="panel"><label class="check"><input id="verified" type="checkbox" required><span>I have reviewed these details and confirm they accurately describe my background.</span></label><p>After saving changes, restart Agent 2 to use the updated profile. Existing generated resumes retain their original profile version.</p><div class="actions"><button class="primary" id="save" disabled>Save profile</button><span id="status" role="status" aria-live="polite">Loading profile…</span></div></section>
+<section class="panel"><label class="check"><input id="verified" type="checkbox" required><span>I have reviewed these details and confirm they accurately describe my background.</span></label><p>After saving changes, restart Agent 2 to use the updated profile. Existing generated resumes retain their original profile version.</p><div class="actions"><button class="primary" id="save" disabled>Save profile</button><button type="button" id="preview">Download saved profile resume</button><span id="status" role="status" aria-live="polite">Loading profile…</span></div></section>
 </form></main><script>
 const $=id=>document.getElementById(id);
 let revision=null,profileId=null,dirty=false;
@@ -25,10 +26,10 @@ function addLink(value={}){
  row.append(label,url,remove);$('links').append(row);
 }
 function addFact(value={}){
- const row=node('div');row.className='row';row.dataset.id=value.id||crypto.randomUUID();
+ const row=node('div');row.className='row';row.dataset.id=value.id||crypto.randomUUID();row.original=value;
  const section=node('select');section.setAttribute('aria-label','Resume section');
  for(const title of ['Summary','Experience','Projects','Education','Skills']){const option=node('option',title);option.value=title;section.append(option)}section.value=value.section||'Experience';
- const text=node('textarea');text.required=true;text.maxLength=2000;text.setAttribute('aria-label','Resume entry');text.placeholder='Describe your verified experience, including names and dates.';text.value=value.text||'';
+ const text=node('textarea');text.required=true;text.maxLength=10000;text.setAttribute('aria-label','Resume entry');text.placeholder='Describe your verified experience, including names and dates. Imported entries preserve paragraph structure: keep the same number of lines when editing.';text.value=value.text||'';
  const remove=node('button','Remove entry');remove.type='button';remove.onclick=()=>{row.remove();markDirty()};
  row.append(section,text,remove);$('facts').append(row);
 }
@@ -40,7 +41,7 @@ async function load(){
  try{
  const response=await fetch('/api/profile');if(!response.ok)throw Error('Cannot load profile. Reload the page to try again.');
  const data=await response.json();revision=data.revision;const p=data.profile;profileId=p?.profile_id||crypto.randomUUID();
- if(p){$('name').value=p.resume_header?.display_name||'';$('contacts').value=(p.resume_header?.contact_lines||[]).join('\n');for(const link of p.resume_header?.links||[])addLink(link);for(const fact of p.facts||[])addFact(fact)}
+ if(p){$('headline').value=p.resume_header?.headline||'';$('name').value=p.resume_header?.display_name||'';$('contacts').value=(p.resume_header?.contact_lines||[]).join('\n');for(const link of p.resume_header?.links||[])addLink(link);for(const fact of p.facts||[])addFact(fact)}
  else addFact();
  $('status').textContent=p?'Profile loaded. Review your details before saving.':'No profile yet. Fill in your details to get started.';$('save').disabled=false;
  }catch(e){$('status').textContent=e.message}
@@ -48,14 +49,45 @@ async function load(){
 $('profile-form').onsubmit=async e=>{
  e.preventDefault();$('save').disabled=true;
  try{
- const facts=[...$('facts').children].map(row=>({id:row.dataset.id,section:row.querySelector('select').value,text:row.querySelector('textarea').value.trim(),verified:true}));
+ const facts=[...$('facts').children].map(row=>{
+ const fact={id:row.dataset.id,section:row.querySelector('select').value,text:row.querySelector('textarea').value.trim(),verified:true};
+ if(row.original?.layout){
+ const lines=fact.text.split('\n');
+ if(lines.length!==row.original.layout.length)throw Error('An imported entry has a different number of paragraphs. Keep its line structure, or remove it and add a new entry.');
+ fact.layout=row.original.layout.map((block,i)=>({...block,text:lines[i]}));
+ }
+ return fact;
+ });
  if(!facts.length)throw Error('Add at least one resume entry.');
  const links=[...$('links').children].map(row=>{const inputs=row.querySelectorAll('input');return {label:inputs[0].value.trim(),url:inputs[1].value.trim()}});
- const profile={profile_id:profileId,verified:$('verified').checked,resume_header:{display_name:$('name').value.trim(),contact_lines:$('contacts').value.split('\n').map(x=>x.trim()).filter(Boolean),links},facts};
+ const profile={profile_id:profileId,verified:$('verified').checked,resume_header:{headline:$('headline').value.trim(),display_name:$('name').value.trim(),contact_lines:$('contacts').value.split('\n').map(x=>x.trim()).filter(Boolean),links},facts};
  const response=await fetch('/api/profile',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({profile,revision})});
  const data=await response.json();if(!response.ok)throw Error(data.error||'Could not save profile');
  revision=data.revision;dirty=false;$('status').textContent='Profile saved. Agent 2 can use it now; restart the worker if it is already running.';
  }catch(e){$('status').textContent=e.message}finally{$('save').disabled=false}
+};
+$('preview').onclick=async()=>{
+ if(dirty){$('status').textContent='Save your changes before downloading.';return}
+ try{
+ const response=await fetch('/api/profile/resume');
+ if(!response.ok){const data=await response.json();throw Error(data.error)}
+ const url=URL.createObjectURL(await response.blob()),link=document.createElement('a');
+ link.href=url;link.download='profile-resume.docx';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+ $('status').textContent='Downloaded your full saved profile in the new layout. This preview is not job-tailored and does not enter the application queue.';
+ }catch(e){$('status').textContent=e.message}
+};
+$('import-resume').onclick=async()=>{
+ const file=$('resume-file').files[0];if(!file){$('import-status').textContent='Choose a DOCX resume first.';return}
+ $('import-resume').disabled=true;
+ try{
+ if(file.size>2000000)throw Error('Choose a DOCX under 2 MB.');
+ const response=await fetch('/api/profile/import',{method:'POST',headers:{'Content-Type':'application/vnd.openxmlformats-officedocument.wordprocessingml.document'},body:file});
+ const data=await response.json();if(!response.ok)throw Error(data.error);
+ const p=data.profile;$('name').value=p.resume_header.display_name;$('headline').value=p.resume_header.headline||'';$('contacts').value=p.resume_header.contact_lines.join('\n');
+ $('links').replaceChildren();$('facts').replaceChildren();
+ p.resume_header.links.forEach(addLink);p.facts.forEach(addFact);markDirty();
+ $('import-status').textContent=data.notice+' '+p.facts.length+' entries loaded.';
+ }catch(e){$('import-status').textContent=e.message}finally{$('import-resume').disabled=false}
 };
 load();
 </script></body></html>

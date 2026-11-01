@@ -224,6 +224,19 @@ def make_handler(service):
                 self.reply(200, Path(__file__).with_name('web').joinpath('index.html').read_text(encoding='utf-8'), 'text/html')
             elif self.path == '/profile':
                 self.reply(200, Path(__file__).with_name('web').joinpath('profile.html').read_text(encoding='utf-8'), 'text/html')
+            elif self.path == '/api/profile/resume':
+                try:
+                    from .resume_worker import validate_profile, validate_result
+                    from .resume_artifact import render_docx, validate_docx
+                    profile, _ = validate_profile(service.read_profile()['profile'])
+                    draft = validate_result({'ordered_fact_ids':[f['id'] for f in profile['facts']],
+                                             'missing_requirements':[]}, profile)
+                    raw = render_docx(draft, profile['_resume_header'])
+                    validate_docx(raw, draft, profile['_resume_header'])
+                    self.reply(200, raw, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                               {'Content-Disposition':'attachment; filename="profile-resume.docx"'})
+                except (ValueError, OSError, KeyError) as exc:
+                    self.reply(400, {'error':str(exc)})
             elif self.path == '/api/profile':
                 self.reply(200, service.read_profile())
             elif re.fullmatch(r'/api/artifacts/[a-f0-9]{64}',self.path):
@@ -261,15 +274,20 @@ def make_handler(service):
             if host != f'127.0.0.1:{self.server.server_port}' or (origin and origin != f'http://{host}'):
                 self.reply(403, {'error': 'Only same-origin local requests are allowed'})
                 return
-            if self.path not in ('/api/runs', '/api/profile'):
+            if self.path not in ('/api/runs', '/api/profile', '/api/profile/import'):
                 self.reply(404, {'error': 'Not found'})
                 return
             try:
                 length = int(self.headers.get('Content-Length', '0'))
-                maximum = 2_000_000 if self.path == '/api/profile' else 16384
+                maximum = 2_000_000 if self.path.startswith('/api/profile') else 16384
                 if not 0 < length <= maximum:
                     raise ValueError(f'Request must be 1–{maximum} bytes')
-                body = json.loads(self.rfile.read(length))
+                raw = self.rfile.read(length)
+                if self.path == '/api/profile/import':
+                    from .profile_import import import_docx
+                    self.reply(200, import_docx(raw))
+                    return
+                body = json.loads(raw)
                 if not isinstance(body, dict):
                     raise ValueError('Expected a JSON object')
                 if self.path == '/api/profile':
