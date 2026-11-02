@@ -1,4 +1,4 @@
-"""Start the sequential discovery scheduler and continuous resume worker together."""
+"""Start Agent 1 dashboard, Agent 2 resume worker, Agent 3 preflight together."""
 import argparse
 import os
 import subprocess
@@ -22,8 +22,22 @@ def main():
         if args.scan_every_minutes is not None:command+=['--scan-every-minutes',str(args.scan_every_minutes)]
         dashboard=subprocess.Popen(command);children.append(dashboard)
         print('Dashboard starts now. Save a verified profile and a manual search to begin continuous processing.',flush=True)
-        worker=None;last_error=None
+        worker=None;agent3=None;last_error=None
         while dashboard.poll() is None:
+            if agent3 is None:
+                try:
+                    with urlopen(f'http://127.0.0.1:{args.port}/api/state',timeout=2) as response:
+                        if response.status!=200:raise ValueError('Dashboard is not yet ready')
+                    command=[sys.executable,'-m','agent.application_worker',
+                             '--database',args.database,'--watch']
+                    agent3=subprocess.Popen(command);children.append(agent3)
+                    print('Agent 3 preflight is running; it prepares verified handoffs but does not submit employer applications.',flush=True)
+                except (ValueError,OSError,URLError) as exc:
+                    print('Agent 3 waiting for dashboard: '+str(exc),flush=True)
+            elif agent3.poll() is not None:
+                print('Agent 3 preflight exited; inspect its console error. No applications were submitted.',flush=True)
+                agent3=None
+                time.sleep(5)
             if worker is None:
                 try:
                     # Wait for dashboard migrations/server startup before opening the worker DB.
