@@ -149,6 +149,11 @@ class TwoLayerIntegrationTests(unittest.TestCase):
         self.assertTrue(all(j['requested_role']=='Software Engineer' for j in state['jobs']))
         self.assertEqual(state['source_scans'][0]['title_filtered'],1)
         self.assertEqual(state['source_scans'][0]['queued'],1)
+        self.assertTrue(self.service.last_manual_request()['title_first'])
+        self.service.scheduled_scan(background=False)
+        repeated=self.service.snapshot()
+        self.assertTrue(__import__('json').loads(repeated['runs'][0]['config'])['rules']['title_first'])
+        self.assertEqual(len(repeated['queue']),1)  # no repeat GPT work
 
     def test_title_first_param_must_be_boolean(self):
         base={'prompt':'Software Engineer','sources':['lever:example']}
