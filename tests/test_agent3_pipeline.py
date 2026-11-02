@@ -76,7 +76,7 @@ class StageThreeTests(unittest.TestCase):
         with agent.connect() as db:
             self.assertEqual(db.execute('SELECT status FROM application_queue').fetchone()[0],
                              'ready_for_application')
-            self.assertEqual(db.execute("SELECT COUNT(*) FROM sqlite_master WHERE name='applied_history'").fetchone()[0],0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM applied_history").fetchone()[0],0)
         self.assertFalse(agent.process_one())
 
     def test_review_required_is_not_claimable_until_exact_artifact_approval(self):
