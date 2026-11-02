@@ -147,6 +147,8 @@ class DashboardTests(unittest.TestCase):
         self.assertIn('Layer 2 · match those title candidates before resume generation',html)
         self.assertIn('selected criteria below are AND conditions',html)
         self.assertIn('title_first:true',html)
+        self.assertIn('Match section · current scan',html)
+        self.assertIn('Saved history · all scans',html)
         self.assertIn("option.disabled=!board.available",html)
         self.assertIn("batch_size:55",html)
         self.assertIn('Agent 4 confirmed submissions',html)
