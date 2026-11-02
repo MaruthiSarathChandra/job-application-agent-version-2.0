@@ -494,12 +494,31 @@ class Service:
                     'SELECT application_order,status,last_error,attempts,updated_at FROM agent3_tasks ORDER BY application_order')
                     ] if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent3_tasks'").fetchone() else [],
                 'saved_stats':saved_stats,
-                'build_version':'2026.11-search-and-handoff',
+                'build_version':'2026.11-qualified-search-v2',
                 'board_options':board_options(self.default_sources),
                 'searched_count':db.execute('SELECT coalesce(sum(processed),0) FROM source_scans').fetchone()[0],
                 'applied_history':[dict(x) for x in db.execute('SELECT * FROM applied_history ORDER BY submitted_at DESC')],
                 'latest_jobs_count':db.execute('SELECT COUNT(*) FROM jobs WHERE last_run_id=?',
                                                (latest_id,)).fetchone()[0],
+                # The public results API is a *qualified-only* projection.
+                # Legacy, excluded, stale and unverified records remain in
+                # jobs/history for audit but do not appear as current matches.
+                'qualified_jobs_count':db.execute(
+                    """SELECT COUNT(*) FROM jobs WHERE last_run_id=?
+                       AND json_extract(payload,'$.qualification.status')='matched'""",
+                    (latest_id,)).fetchone()[0],
+                'qualified_jobs':[row_job(x) for x in db.execute(
+                    """SELECT * FROM jobs WHERE last_run_id=?
+                       AND json_extract(payload,'$.qualification.status')='matched'
+                       ORDER BY COALESCE(CAST(json_extract(payload,'$.match_evidence.score')
+                            AS REAL),-1) DESC,updated_at DESC LIMIT 250""",
+                    (latest_id,))],
+                'latest_scan_counts':{key:db.execute(
+                    f'SELECT COALESCE(SUM({key}),0) FROM source_scans WHERE run_id=?',
+                    (latest_id,)).fetchone()[0] for key in
+                    ('fetched','processed','title_filtered','new_jobs',
+                     'existing_jobs','matched','excluded','needs_full_jd',
+                     'date_unknown','queued','errors')},
                 'latest_jobs':[row_job(x) for x in db.execute(
                     'SELECT * FROM jobs WHERE last_run_id=? ORDER BY updated_at DESC LIMIT 250',
                     (latest_id,))],
