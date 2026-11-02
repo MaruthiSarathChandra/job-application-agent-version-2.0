@@ -109,7 +109,7 @@ class DashboardTests(unittest.TestCase):
                 self.assertEqual(response.status,200)
                 self.assertIn('charset=utf-8', response.getheader('Content-Type'))
                 html = response.read().decode('utf-8')
-                self.assertIn('Opportunity pipeline', html)
+                self.assertIn('Qualified opportunities', html)
                 self.assertIn('→', html)
             conn.request('POST','/api/runs', json.dumps(self.body), {'Origin':'https://evil.example'})
             response = conn.getresponse()
