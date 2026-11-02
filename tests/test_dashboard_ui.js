@@ -23,7 +23,17 @@ vm.createContext(context);vm.runInContext(html.split('<script>')[1].split('</scr
  assert.equal(nodes.get('connection').textContent,'Connected');
  assert(nodes.get('board-provider').children.find(x=>x.value==='linkedin').disabled);
  nodes.get('queuetab').onclick();assert.equal(nodes.get('rows').children.length,0,'Completed resume must leave active queue');
+ state.drafts=[{queue_order:1,result:JSON.stringify({sections:[],missing_requirements:[],note:'Completed draft'})}];
+ await vm.runInContext('refresh()',context);
+ nodes.get('drafttab').onclick();
+ assert.equal(nodes.get('rows').children.length,0,'Completed DOCX must not remain in unfinished GPT draft view');
  nodes.get('applicationtab').onclick();assert.equal(nodes.get('rows').children.length,1);
+ assert.equal(nodes.get('stage-agent3').textContent,'0');
+ state.pipeline_counts={ready_for_application:1,confirmed_submissions:0};
+ state.agent3_tasks=[{application_order:1,status:'awaiting_browser_adapter',last_error:null}];
+ await vm.runInContext('refresh()',context);
+ assert.equal(nodes.get('stage-agent3').textContent,1);
+ assert.equal(nodes.get('rows').children.length,1);
  nodes.get('appliedtab').onclick();assert.equal(nodes.get('rows').children.length,0,'Generated resume is not applied');
  state={...state,applications:[{...state.applications[0],status:'submitted'}],applied_history:[{job_id:'job1',artifact_id:'artifact1',payload:JSON.stringify(payload)}]};
  await vm.runInContext('refresh()',context);assert.equal(nodes.get('rows').children.length,1);
