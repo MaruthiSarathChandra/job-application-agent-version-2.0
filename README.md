@@ -99,3 +99,93 @@ See [architecture](docs/architecture.md) for queue contracts and failure behavio
 This repository has queue contracts, not working account-creation or submission adapters. After actual preparation, Agent 3 can POST `/api/applications/prepared` with `job_id`, `artifact_id`, and `prepared: true`. After actual confirmed submission, Agent 4 can POST `/api/applications/submitted` with the same IDs, `submitted: true`, `confirmed: true`, `submission_id`, timezone-aware `submitted_at`, and an HTTPS `confirmation_url`. These endpoints record trusted local worker reports; they do not submit or independently confirm with employers. Do not call them to simulate real applications.
 
 Applied history retains the exact JD, job link, resume artifact and receipt. Failed/unconfirmed outcomes never create an applied record. Repeated identical receipts are idempotent; conflicting receipts are rejected. Once prepared/submitted, regeneration cannot replace the resume used for that application.
+
+
+## Agent 3 execution and truthful application history
+
+The application pipeline intentionally distinguishes:
+
+| Stage | Meaning |
+| --- | --- |
+| Resume queue | Qualified job still waiting for the model or DOCX validation |
+| Drafts awaiting DOCX | Model draft not yet successfully packaged (historical drafts remain retained in SQLite) |
+| Agent 3 · resume handoffs | Finished DOCX with job URL/JD; may still need review or preflight |
+| Agent 4 · awaiting submission | An employer-site application was *reported as prepared* by an external worker |
+| Applied history | A submission with recorded receipt/reference, timestamp and confirmation URL |
+
+The UI never treats a saved job, a GPT draft, or a generated resume as an
+applied job. Historical discovered jobs stay in **Saved jobs**; **Applied
+history** is a separate durable record created only through the submission
+confirmation integration contract.
+
+**One-command starter (Agents 1 + 2 + 3 preflight):**
+
+```powershell
+python -m agent.app
+```
+
+The launcher starts the dashboard and continuously watching Agent 2 plus
+Agent 3 preflight worker. The resume worker needs a verified local profile,
+`OPENAI_API_KEY` and `OPENAI_MODEL`. Agent 3 does not need Gmail, model
+credits, or a profile to wait for ready handoffs. It verifies saved resume
+SHA-256, profile version, job snapshot, automatic handoff versus explicit
+approval, and a matching ready outbox event. Its success state is
+`awaiting_browser_adapter` and **never means submitted**.
+
+If you prefer the established three independent terminals:
+
+```powershell
+# Terminal 1
+python -m agent.dashboard --sources-file examples/sources.json
+# Terminal 2
+python -m agent.resume_worker --profile data/profile.json --watch
+# Terminal 3
+python -m agent.application_worker --database data/agent.db --watch
+```
+
+`--watch` without `--limit` runs until you stop that terminal. Agent 3
+uses transactional claims, checks exact artifact bytes and supports bounded
+preflight retries. See `--status` for the durable state without processing.
+
+**Optional guided employer browser (NOT unattended form submission):**
+
+```powershell
+python -m pip install -r requirements-browser.txt
+python -m playwright install chromium
+python -m agent.application_browser --application-order 1 --answers data/application-answers.json
+```
+
+Create `data/application-answers.json` locally with keys `verified=true`,
+`first_name`, `last_name`, `email`, and optionally `phone` and `linkedin`;
+verify every value yourself. Only known contact fields and the exact checked
+DOCX are filled on an allowed HTTPS employer site. The browser helper stops
+for unknown questions, account creation, OTP and final review; it never
+clicks Submit or marks applied. Job forms are employer-specific.
+
+**Optional Gmail OTP checking:** `agent.gmail_otp` uses separate local
+Google OAuth with `gmail.readonly`; do not store credentials in Git.
+A specific sender, dedicated label and recently requested timestamp are
+required by the application logic. Google's OAuth scope itself allows
+read access to the entire mailbox, **not OTP-only provider permissions**;
+use a dedicated Gmail account for stronger isolation. OTP retrieval is
+not wired into the guided browser adapter. No emails are sent/modified.
+
+**Agent 4 is an integration boundary, not yet an ATS submission robot.**
+The existing `agent.application_history.prepared` and `submitted` functions
+are idempotent local recording contracts. They require exact resume IDs;
+a reported confirmation requires submission ID, timestamp and HTTPS
+confirmation link. Those inputs are provided by a future real employer
+adapter; the current program does not independently verify an employer
+submission. The UI therefore does **not** offer a fake "Mark applied" button.
+Neither this PR nor the optional browser helper fills arbitrary legal/visa
+questions, bypasses CAPTCHA or submits without real verification.
+
+To test the honest stages offline:
+
+```powershell
+python -m unittest discover -s tests -v
+python -m agent.application_worker --status
+```
+
+The prior Agent 3 PR #4 remains separate and should not be blindly merged
+on top of this branch without reconciling the overlapping files.
