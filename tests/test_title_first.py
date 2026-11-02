@@ -14,16 +14,25 @@ from agent.title_search import requested_title, title_candidate
 class TitleOnlyUnitTests(unittest.TestCase):
     def test_title_boundary_case_and_punctuation(self):
         titles=['Software Engineer','Java Developer']
-        for title in ('Senior Software Engineer','Software Engineer, Backend',
-                      'software-engineer (platform)','Sr. Java Developer'):
+        for title in ('Software Engineer, Backend','software-engineer (platform)',
+                      'Java Developer', 'Junior Software Engineer'):
             self.assertIsNotNone(requested_title(title,titles),title)
-        for title in ('Software Engineering Manager','Bioengineering Specialist',
-                      'Software Engineering','Mechanical Designer','Engineer Manager'):
+        for title in ('Senior Software Engineer','Staff Software Engineer',
+                      'Principal Software Engineer','Software Engineer, Lead',
+                      'Sr. Java Developer','Software Engineering Manager',
+                      'Bioengineering Specialist','Mechanical Designer'):
             self.assertIsNone(requested_title(title,titles),title)
-        candidate=title_candidate({'title':'Senior Software Engineer',
+        self.assertEqual(requested_title('Senior Software Engineer',
+                         ['Software Engineer','Senior Software Engineer']),
+                         'Senior Software Engineer')
+        self.assertEqual(requested_title('Sr. Java Developer',
+                         ['Sr Java Developer']),'Sr Java Developer')
+        candidate=title_candidate({'title':'Software Engineer, Platform',
                                     'description':'Cloud'}, {'title_keywords':titles})
         self.assertEqual(candidate['discovery_layer'],'title_candidate_v1')
         self.assertEqual(candidate['requested_role'],'Software Engineer')
+        self.assertIsNone(title_candidate({'title':'Senior Software Engineer'},
+                                            {'title_keywords':titles}))
 
     def test_layer_one_only_uses_title_not_location_or_jd(self):
         job={'title':'Software Engineer','location':'Argentina','description':'No relevant skills'}
@@ -138,17 +147,21 @@ class TwoLayerIntegrationTests(unittest.TestCase):
         self.service.fetcher=lambda _:rows
         self.service.start({'prompt':'Software Engineer','sources':['lever:example'],
                             'title_first':True,
-                            'excluded_title_keywords':['Senior','Staff'],
+                            'excluded_title_keywords':[],
                             'country_codes':['US'],'jd_keywords':['Java']},
                            background=False)
         state=self.service.snapshot()
-        self.assertEqual(state['saved_stats']['total'],3)
+        self.assertEqual(state['saved_stats']['total'],2)
         self.assertEqual(state['saved_stats']['matched'],1)
-        self.assertEqual(state['saved_stats']['excluded'],2)
+        self.assertEqual(state['saved_stats']['excluded'],1)
         self.assertEqual(len(state['queue']),1)
         self.assertTrue(all(j['requested_role']=='Software Engineer' for j in state['jobs']))
-        self.assertEqual(state['source_scans'][0]['title_filtered'],1)
+        self.assertEqual(state['source_scans'][0]['title_filtered'],2)
         self.assertEqual(state['source_scans'][0]['queued'],1)
+        self.assertEqual(state['qualified_jobs_count'],1)
+        self.assertEqual(len(state['qualified_jobs']),1)
+        self.assertEqual(state['qualified_jobs'][0]['title'],'Software Engineer')
+        self.assertEqual(state['latest_jobs_count'],2)
         self.assertTrue(self.service.last_manual_request()['title_first'])
         self.service.scheduled_scan(background=False)
         repeated=self.service.snapshot()
