@@ -36,11 +36,13 @@ class Agent3:
         self.database = str(database)
         # Create only missing local tables, never reset historical jobs/resumes.
         Path(self.database).parent.mkdir(parents=True, exist_ok=True)
-        from .dashboard import Service
-        Service(self.database)
+        from .intake import IntakeStore
+        from .dashboard import SCHEMA as DASHBOARD_SCHEMA
         from .resume_artifact import SCHEMA as ARTIFACT_SCHEMA
+        store=IntakeStore(self.database)
+        store.close()
         with self.connect() as db:
-            db.executescript(ARTIFACT_SCHEMA + SCHEMA)
+            db.executescript(DASHBOARD_SCHEMA + ARTIFACT_SCHEMA + SCHEMA)
         self.sync()
 
     @contextmanager
