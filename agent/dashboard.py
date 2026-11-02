@@ -244,6 +244,7 @@ class Service:
                    ('excluded_title_keywords','locations','jd_keywords','country_codes')},
                 'posted_within_hours':rules.get('posted_within_hours',0),'time_basis':rules.get('time_basis','published'),
                 'max_required_years':rules.get('max_required_years'),'min_match_percent':rules.get('min_match_percent',0),
+                'title_first':rules.get('title_first',False),
                 **({'batch_size':55} if rules.get('batch_size') else {})}
 
     def scheduled_scan(self, background=True):
