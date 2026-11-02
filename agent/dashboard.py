@@ -445,7 +445,8 @@ class Service:
                         totals[key] += counts[key]
             status = 'completed_with_errors' if failures else 'completed'
             self.event(run_id,'finished',
-                f"Scan finished: {totals['fetched']} returned (raw API postings), "
+                f"Scan finished: {totals['fetched']} returned "
+                f"({'title candidates inspected' if rules.get('title_first') else 'raw API postings'}), "
                 f"{totals['title_filtered']} unrelated titles skipped, "
                 f"{totals['new_jobs']} new requested-title candidates (Layer 1), "
                 f"{totals['existing_jobs']} previously seen matching-title jobs, "
