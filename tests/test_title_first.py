@@ -168,6 +168,44 @@ class TwoLayerIntegrationTests(unittest.TestCase):
         self.assertTrue(__import__('json').loads(repeated['runs'][0]['config'])['rules']['title_first'])
         self.assertEqual(len(repeated['queue']),1)  # no repeat GPT work
 
+    def test_existing_senior_resume_is_blocked_when_search_changes(self):
+        from agent.handoff import current_decision
+        senior={'url':'https://careers.example.org/senior','title':'Senior Software Engineer',
+                'company':'Example','location':'US','description':'Java and Spring Boot'}
+        self.service.fetcher=lambda _: [senior]
+        self.service.start({'prompt':'Senior Software Engineer',
+                            'sources':['lever:example'],'title_first':True},background=False)
+        old_queue=self.service.snapshot()['queue']
+        self.assertEqual(len(old_queue),1)
+        old_job=__import__('json').loads(old_queue[0]['snapshot'])
+        self.service.start({'prompt':'Software Engineer',
+                            'sources':['lever:example'],'title_first':True},background=False)
+        self.assertEqual(current_decision(self.service,old_job)['status'],'excluded')
+        self.assertEqual(len(self.service.snapshot()['queue']),1)
+        self.assertEqual(self.service.snapshot()['qualified_jobs_count'],0)
+
+    def test_strict_search_filters_are_all_required_even_for_100_percent_skills(self):
+        from agent.intake import qualify
+        from datetime import timedelta
+        now=datetime.now(timezone.utc)
+        rules={'title_first':True,'title_keywords':['Software Engineer'],
+               'country_codes':['US'],'posted_within_hours':7,
+               'max_required_years':1,'min_match_percent':85,
+               'profile_skills':['Java','Spring Boot']}
+        job={'title':'Software Engineer','location':'United States',
+             'description':'At least 1 year of software development experience using Java and Spring Boot.',
+             'source_posted_at':now.isoformat()}
+        self.assertEqual(qualify(job,rules)['status'],'matched')
+        for change in (
+            {'title':'Senior Software Engineer'},
+            {'location':'Toronto, Canada'},
+            {'description':'At least 3 years of software development experience using Java and Spring Boot.'},
+            {'description':'At least 1 year of software development experience using Python and Rust.'},
+            {'source_posted_at':(now-timedelta(hours=10)).isoformat()}
+        ):
+            with self.subTest(change=change):
+                self.assertNotEqual(qualify({**job,**change},rules)['status'],'matched')
+
     def test_title_first_param_must_be_boolean(self):
         base={'prompt':'Software Engineer','sources':['lever:example']}
         with self.assertRaises(ValueError):
