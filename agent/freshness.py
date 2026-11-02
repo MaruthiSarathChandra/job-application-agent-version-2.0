@@ -41,12 +41,17 @@ def freshness(job, within_hours=0, now=None):
 
 
 def date_decision(job, rules, now=None):
-    outcome = freshness(job, rules.get('posted_within_hours', 0), now)
+    basis=rules.get('time_basis','published')
+    if basis not in ('published','first_seen'):
+        raise ValueError('Time basis must be published or first_seen')
+    source=job if basis=='published' else {'source_posted_at':job.get('first_seen_at')}
+    outcome = freshness(source, rules.get('posted_within_hours', 0), now)
+    label='Employer publication' if basis=='published' else 'First discovery'
     if outcome['status'] == 'too_old':
-        return {'status':'excluded','reasons':[f"Employer publication predates the {outcome['hours']}h window"],
-                'scope':'Posting age verified from employer-provided publication timestamp'}
+        return {'status':'excluded','reasons':[f"{label} predates the {outcome['hours']}h window"],
+                'scope':'Employer publication window' if basis=='published' else 'First discovery window; not employer posting age'}
     if outcome['status'] == 'unknown_posting_date':
         return {'status':'date_unknown',
-                'reasons':[f"Publication time unavailable or unverified; cannot prove posted within {outcome['hours']}h"],
+                'reasons':[f"{label} time unavailable or unverified; cannot prove within {outcome['hours']}h"],
                 'scope':'Review-only: never queue a job as newly posted without a verified publication instant'}
     return None

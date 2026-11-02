@@ -338,7 +338,8 @@ def save_artifact(draft, header, directory):
 
 
 class Packager:
-    def __init__(self, database, profile, version, artifact_dir='artifacts/resumes'):
+    def __init__(self, database, profile, version, artifact_dir='artifacts/resumes', auto_handoff=False):
+        self.auto_handoff=auto_handoff
         self.database, self.profile, self.version, self.artifact_dir = database, profile, version, artifact_dir
         with self.connect() as db:
             db.executescript(SCHEMA)
@@ -382,36 +383,44 @@ class Packager:
         if not task:
             return False
         try:
-            if task['profile_version']!=self.version:
-                raise ValueError('Draft profile version differs from this worker profile; use the original verified profile')
             draft=json.loads(task['result'])
+            profile=draft.get('_profile_snapshot',self.profile)
+            if '_profile_snapshot' not in draft and task['profile_version']!=self.version:
+                raise ValueError('Draft profile version differs from this worker profile; use the original verified profile')
+            if self.auto_handoff:
+                from .handoff import current_decision
+                if current_decision(self,json.loads(task['snapshot']))['status']!='matched':
+                    raise ValueError('Job no longer matches current discovery filters; handoff blocked')
             if draft.get('writer_version'):
                 from .resume_writer import validate_draft
-                validate_draft(draft, self.profile)
+                validate_draft(draft, profile)
             else:
-                facts={f['id']:f for f in self.profile['facts']}
+                facts={f['id']:f for f in profile['facts']}
                 for section in draft['sections']:
                     for fact in section['facts']:
                         if fact['id'] not in facts or facts[fact['id']]!=fact or fact['section']!=section['title']:
                             raise ValueError('Draft facts differ from the verified profile')
-            artifact=save_artifact(draft,self.profile.get('_resume_header'),self.artifact_dir)
+            artifact=save_artifact(draft,profile.get('_resume_header'),self.artifact_dir)
             event={'schema_version':1,'event_id':str(uuid.uuid4()),'correlation_id':draft.get('correlation_id',task['job_id']),
-                   'job_id':task['job_id'],'profile_version':self.version,'job':json.loads(task['snapshot']),
+                   'job_id':task['job_id'],'profile_version':task['profile_version'],'job':json.loads(task['snapshot']),
+                   'job_url':json.loads(task['snapshot'])['url'],
+                   'handoff_mode':'automatic' if self.auto_handoff else 'review',
+                   'review_status':'not_reviewed',
                    'resume':{k:v for k,v in artifact.items() if k!='path'},
                    'unsupported_requirements':draft['missing_requirements'],'eligibility_status':'not_assessed',
-                   'status':'review_required' if draft.get('requires_review') else 'ready_for_application'}
+                   'status':'review_required' if draft.get('requires_review') and not self.auto_handoff else 'ready_for_application'}
             with self.connect() as db:
                 db.execute('BEGIN IMMEDIATE')
                 changed=db.execute("UPDATE render_tasks SET status='completed',worker_token=NULL,lease_until=NULL,last_error=NULL WHERE queue_order=? AND worker_token=?",(task['queue_order'],task['worker_token']))
                 if changed.rowcount!=1:
                     raise ValueError('Render lease lost; stale artifact result discarded')
                 db.execute('INSERT OR IGNORE INTO resume_artifacts(id,path,sha256,profile_version,template_version,validation) VALUES(?,?,?,?,?,?)',
-                           (artifact['artifact_id'],artifact['path'],artifact['sha256'],self.version,TEMPLATE_VERSION,json.dumps(artifact['validation'])))
+                           (artifact['artifact_id'],artifact['path'],artifact['sha256'],task['profile_version'],TEMPLATE_VERSION,json.dumps(artifact['validation'])))
                 cursor=db.execute('INSERT INTO application_queue(job_id,resume_artifact_id,payload,status) VALUES(?,?,?,?)',
                                   (task['job_id'],artifact['artifact_id'],json.dumps(event),event['status']))
                 event['application_queue_order']=cursor.lastrowid
                 db.execute('UPDATE application_queue SET payload=? WHERE sequence=?',(json.dumps(event),cursor.lastrowid))
-                if not draft.get('requires_review'):
+                if self.auto_handoff or not draft.get('requires_review'):
                     db.execute('INSERT INTO outbox(event_key,topic,payload) VALUES(?,?,?)',('applications.ready:'+task['job_id'],'applications.ready.v1',json.dumps(event)))
                 db.execute('INSERT INTO consumer_receipts(consumer,event_key) VALUES(?,?)',('resume-packager-v1',task['event_key']))
                 db.execute("UPDATE resume_queue SET status='resume_ready' WHERE sequence=?",(task['queue_order'],))

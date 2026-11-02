@@ -83,6 +83,10 @@ def rules_from_request(body):
     if type(hours) is not int or hours not in (0, 7, 24, 72):
         raise ValueError('Posting window must be Any, 7 hours, 24 hours, or 3 days')
     rules['posted_within_hours'] = hours
+    basis=body.get('time_basis','published')
+    if basis not in ('published','first_seen'):
+        raise ValueError('Choose published or first_seen time basis')
+    rules['time_basis']=basis
     return prompt.strip(), rules, validate_sources(body.get('sources'))
 
 
@@ -102,6 +106,7 @@ class Service:
         with self.connect() as db:
             from .resume_regeneration import SCHEMA as REGEN_SCHEMA
             db.executescript(SCHEMA + REGEN_SCHEMA)
+            db.execute('CREATE TABLE IF NOT EXISTS workspace_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL)')
             columns = {row[1] for row in db.execute('PRAGMA table_info(discovery_runs)')}
             if 'trigger' not in columns:
                 db.execute("ALTER TABLE discovery_runs ADD COLUMN trigger TEXT NOT NULL DEFAULT 'manual'")
@@ -170,7 +175,7 @@ class Service:
             raise ValueError('Unknown scan trigger')
         body = dict(body)
         if not body.get('sources'):
-            body['sources'] = self.default_sources or (['adzuna:us'] if os.getenv('ADZUNA_APP_ID') and os.getenv('ADZUNA_APP_KEY') else [])
+            body['sources'] = self.default_sources or (['adzuna:us'] if os.getenv('ADZUNA_APP_ID') and os.getenv('ADZUNA_APP_KEY') else ['directory:verified'])
         prompt, rules, sources = rules_from_request(body)
         if not self.lock.acquire(blocking=False):
             raise ValueError('A discovery run is already active')
@@ -205,13 +210,28 @@ class Service:
         return {'prompt':row['prompt'], 'sources':config['sources'],
                 **{name:rules.get(name,[]) for name in
                    ('excluded_title_keywords','locations','jd_keywords','country_codes')},
-                'posted_within_hours':rules.get('posted_within_hours',0)}
+                'posted_within_hours':rules.get('posted_within_hours',0),'time_basis':rules.get('time_basis','published')}
 
     def scheduled_scan(self, background=True):
         request = self.last_manual_request()
         if request is None:
             return None
         return self.start(request,background=background,trigger='scheduled')
+
+    def set_schedule(self, every_minutes):
+        if type(every_minutes) is not int or (every_minutes!=0 and not 5<=every_minutes<=1440):
+            raise ValueError('Schedule must be 0 (off) or 5–1440 minutes')
+        self.stop_schedule()
+        if every_minutes:
+            self.enable_schedule(every_minutes)
+        with self.connect() as db:
+            db.execute('INSERT OR REPLACE INTO workspace_settings VALUES(?,?)',('scan_every_minutes',str(every_minutes)))
+        return {'scan_every_minutes':every_minutes}
+
+    def saved_schedule(self):
+        with self.connect() as db:
+            row=db.execute("SELECT value FROM workspace_settings WHERE key='scan_every_minutes'").fetchone()
+        return int(row['value']) if row else 15
 
     def enable_schedule(self, every_minutes):
         """Opt-in periodic discovery; only runs while this dashboard is running."""
@@ -239,6 +259,9 @@ class Service:
 
     def stop_schedule(self):
         self._scan_stop.set()
+        thread=getattr(self,'_scan_thread',None)
+        if thread and thread is not threading.current_thread():
+            thread.join(timeout=2)
         self.next_scan_epoch = None
         self.scan_interval_minutes = None
 
@@ -317,10 +340,19 @@ class Service:
                                     self.event(run_id,decision,f"{title}: {'; '.join(reasons)}")
                                 continue
                             with self.connect() as db:
-                                cursor = db.execute('INSERT OR IGNORE INTO resume_queue(job_id,run_id,snapshot) VALUES(?,?,?)',
-                                                    (result['job_id'],run_id,json.dumps(result)))
+                                db.execute('BEGIN IMMEDIATE')
+                                # Only tasks excluded before GPT may be requeued after filters change.
+                                # Completed/processing tasks and their artifacts are never overwritten.
+                                excluded=db.execute("SELECT sequence FROM resume_queue WHERE job_id=? AND status='resume_excluded'",(result['job_id'],)).fetchone()
+                                if excluded:
+                                    db.execute("DELETE FROM consumer_receipts WHERE consumer='resume-gpt-v1' AND event_key=?",('resume.requested:'+result['job_id'],))
+                                    db.execute("DELETE FROM outbox WHERE event_key=?",('resume.requested:'+result['job_id'],))
+                                    cursor=db.execute("UPDATE resume_queue SET status='resume_waiting',run_id=?,snapshot=?,attempts=0,next_attempt_at=0,last_error=NULL,worker_token=NULL,lease_until=NULL WHERE sequence=?",(run_id,json.dumps(result),excluded['sequence']))
+                                else:
+                                    cursor = db.execute('INSERT OR IGNORE INTO resume_queue(job_id,run_id,snapshot) VALUES(?,?,?)',
+                                                        (result['job_id'],run_id,json.dumps(result)))
                                 if cursor.rowcount:
-                                    number = cursor.lastrowid
+                                    number = excluded['sequence'] if excluded else cursor.lastrowid
                                     payload = {'schema_version':1, 'event_id':str(uuid.uuid4()),
                                                'correlation_id':result['job_id'],'queue_order':number,
                                                'job_id':result['job_id'],'job':result,
@@ -380,13 +412,13 @@ class Service:
                 self.lock.release()
 
     def snapshot(self):
+        from .worker_health import status as worker_status
         with self.connect() as db:
             latest = db.execute('SELECT id FROM discovery_runs ORDER BY rowid DESC LIMIT 1').fetchone()
             latest_id = latest['id'] if latest else ''
             def row_job(x):
-                return dict(id=x['id'], first_seen_at=x['first_seen_at'],
-                            last_seen_at=x['last_seen_at'], last_run_id=x['last_run_id'],
-                            **json.loads(x['payload']))
+                return {**json.loads(x['payload']), 'id':x['id'], 'first_seen_at':x['first_seen_at'],
+                            'last_seen_at':x['last_seen_at'], 'last_run_id':x['last_run_id']}
             saved_stats = {'total':db.execute('SELECT COUNT(*) FROM jobs').fetchone()[0]}
             for status in ('matched','excluded','needs_full_jd','date_unknown'):
                 saved_stats[status] = db.execute(
@@ -399,6 +431,8 @@ class Service:
                 'latest_jobs':[row_job(x) for x in db.execute(
                     'SELECT * FROM jobs WHERE last_run_id=? ORDER BY updated_at DESC LIMIT 250',
                     (latest_id,))],
+                'worker':worker_status(db),
+                'queue_counts':{r['status']:r['n'] for r in db.execute('SELECT status,count(*) n FROM resume_queue GROUP BY status')},
                 'regenerations': [dict(x) for x in db.execute('SELECT id,queue_order,status,error,created_at FROM resume_regenerations ORDER BY created_at DESC,rowid DESC')],
                 'sources': source_catalog(),
                 'applications': [dict(x) for x in db.execute('SELECT sequence,job_id,resume_artifact_id,status,payload FROM application_queue ORDER BY sequence')] if db.execute("SELECT 1 FROM sqlite_master WHERE name='application_queue'").fetchone() else [],
@@ -512,7 +546,7 @@ def make_handler(service):
             if host != f'127.0.0.1:{self.server.server_port}' or (origin and origin != f'http://{host}'):
                 self.reply(403, {'error': 'Only same-origin local requests are allowed'})
                 return
-            if self.path not in ('/api/runs', '/api/profile', '/api/profile/import', '/api/resumes/regenerate', '/api/resumes/approve', '/api/jobs/enrich'):
+            if self.path not in ('/api/runs', '/api/profile', '/api/profile/import', '/api/resumes/regenerate', '/api/resumes/approve', '/api/jobs/enrich','/api/discovery/schedule'):
                 self.reply(404, {'error': 'Not found'})
                 return
             try:
@@ -529,7 +563,9 @@ def make_handler(service):
                 body = json.loads(raw)
                 if not isinstance(body, dict):
                     raise ValueError('Expected a JSON object')
-                if self.path == '/api/jobs/enrich':
+                if self.path == '/api/discovery/schedule':
+                    self.reply(200, service.set_schedule(body.get('every_minutes')))
+                elif self.path == '/api/jobs/enrich':
                     from .enrichment import enrich_job
                     self.reply(200, enrich_job(service, body))
                 elif self.path == '/api/resumes/approve':
@@ -562,7 +598,7 @@ def main():
     parser.add_argument('--profile', help='Profile save path; default: profile.json beside the database')
     parser.add_argument('--port', default=8765, type=int)
     parser.add_argument('--sources-file', help='JSON array of default company-board and market-search sources')
-    parser.add_argument('--scan-every-minutes',type=int,default=0,
+    parser.add_argument('--scan-every-minutes',type=int,default=None,
                         help='Opt into periodic scans of the last manual search (5–1440 min); 0 disables scheduling')
     args = parser.parse_args()
     Path(args.database).parent.mkdir(parents=True, exist_ok=True)
@@ -572,8 +608,7 @@ def main():
     if defaults:
         defaults = validate_sources(defaults)
     service = Service(args.database, default_sources=defaults, profile_path=args.profile)
-    if args.scan_every_minutes:
-        service.enable_schedule(args.scan_every_minutes)
+    service.set_schedule(service.saved_schedule() if args.scan_every_minutes is None else args.scan_every_minutes)
     server = ThreadingHTTPServer(('127.0.0.1', args.port), make_handler(service))
     print(f'Job dashboard: http://127.0.0.1:{args.port}', flush=True)
     try:

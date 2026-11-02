@@ -1,456 +1,92 @@
 # Job Application Agent 2.0
 
-Python 3.11+ modular application. Phase 1 provides a local HTML dashboard, public-board discovery, and durable intake. Discovery requires no third-party dependencies or API credentials. Agent 2 requires the DOCX dependency and, for GPT calls, local API configuration.
+A local Python 3.11+ dashboard with independent job discovery and resume workers. SQLite queues and transactional outbox records connect the workers. Agent 3 receives application bundles; account creation and application submission are not implemented.
 
-## Interactive dashboard
+## Start both agents
 
-```powershell
-git switch phase-1/job-intake
-python -m agent.dashboard
-```
-
-Open http://127.0.0.1:8765 in your browser. Keep the terminal running. No pip installation is needed.
-
-Enter a title prompt such as `Find software engineer jobs` or `software engineer | backend developer`. Add company boards as `greenhouse:board-token, lever:site-name`; the token is the company segment of its public board URL. These are configured boards, not an internet-wide search. Greenhouse and Lever discovery use their public read-only APIs.
-
-Optional exact locations use semicolons (location labels can contain commas). Required JD phrases and excluded title words use commas. Full natural-language requirement extraction and automatic fallback expansion are not implemented; the page describes the supported grammar. No model calls occur in this phase.
-
-Watch the activity feed, open a saved JD, inspect exclusion reasons, or select Resume queue to see stable order numbers, job links, and `resume_waiting` status. Data survives a server restart. The table currently shows the latest 500 saved jobs; activity shows the latest 200 events. Older records remain in SQLite. Queue order numbers are stable identifiers, not recalculated positions, and can have gaps.
-
-Only one discovery run is active per server process. Use one server process per database. A restart marks unfinished runs interrupted; rerunning the same boards is safe against duplicate queue entries.
-
-## CLI import
-
-```powershell
-python -m agent --job-file examples/job.json --requirements examples/requirements.json
-python -m unittest discover -s tests -v
-```
-
-Repeat the first command: one job remains in `data/agent.db`, with a separate intake attempt per run. The example is fictional. Replace it with a captured posting to import real data.
-
-## Current behavior
-
-- Normalize raw, Markdown, and angle-bracket URLs; remove tracking and Workday `/apply` aliases.
-- Detect Workday, Rippling, Greenhouse, Lever, or generic career sites.
-- Require title, company, location, and JD before saving.
-- Deduplicate by explicit employer key + requisition when available; otherwise canonical URL. URL-only identity cannot catch every employer alias.
-- Record explicit title/location matching reasons. `matched` does not establish work authorization, experience eligibility, or fitness for submission.
-- Persist jobs and intake attempt results transactionally in SQLite. Restarting does not erase progress.
-- Reject unsupported configuration keys rather than silently ignoring them.
-
-## Next increments
-
-1. Broader job-source connectors, natural-language query planning, and richer eligibility rules.
-2. Requirements enrichment, job-source connectors, and explicitly configured search expansion.
-3. Verified profile and fixed-template resume generation.
-4. Secure account access and Gmail verification.
-5. ATS application workers and submission reconciliation.
-
-See [architecture](docs/architecture.md). This increment fetches Greenhouse/Lever boards; it does not scrape arbitrary job URLs, create accounts, generate resumes, or submit applications.
-
-## Expanded sources and the independent GPT worker
-
-Supported connectors now include `ashby:board` and optional market search `adzuna:us`, in addition to Greenhouse and Lever. These are separate source adapters, not universal job-board coverage. LinkedIn, Indeed, Workday discovery and other sources do not have dedicated connectors yet. The dashboard reports supported sources and setup state.
-
-Adzuna requires `ADZUNA_APP_ID` and `ADZUNA_APP_KEY` in the dashboard process environment. Set them locally using your normal secret manager; do not commit or send credentials in chat. With both configured, an empty Sources field searches Adzuna US using the title prompt. Search is bounded to 3 pages per title and 5 alternative titles. Adzuna descriptions are treated as excerpts: they appear as **needs full JD**, and do not enter the resume queue. Complete employer-JD enrichment is the next discovery milestone.
-
-To avoid entering company boards on every run, put your board sources in a local JSON array and start:
-
-```powershell
-python -m agent.dashboard --sources-file examples/sources.json
-```
-
-The included file now selects the verified company directory group. You may replace it with specific public boards; leaving the Sources field empty uses those defaults. Explicit Sources overrides server defaults. Sources and requirements are visible in the persisted run config.
-
-### Start the second process
-
-1. Copy `examples/profile.template.json` to `data/profile.json`.
-2. Replace every placeholder, including resume_header (name, contact lines, and links), with exact professional facts you have verified. Set `verified` to true for the profile and each fact only after review. Do not use the template as a real profile.
-3. Configure `OPENAI_API_KEY` and `OPENAI_MODEL` in the worker's environment. The key is server-side only. Select a model your API account supports with Responses structured outputs. There is no assumed default model.
-4. Install Agent 2 dependencies with `python -m pip install -r requirements.txt`. In a second terminal, from the same repository folder and using the same database:
-
-```powershell
-python -m agent.resume_worker --profile data/profile.json --limit 1
-```
-
-For polling while discovery continues:
-
-```powershell
-python -m agent.resume_worker --profile data/profile.json --watch --limit 10
-```
-
-The limit is a task-attempt budget, not a successful-draft count. Without --watch, the worker exits if no eligible tasks are available. With --watch, it waits until the task budget is used or you press Ctrl+C.
-
-The independent worker consumes queued `resume.requested.v1` events, leases one task at a time, calls GPT through the Responses API, validates the returned writing and source references, and persists a `resume.drafted.v1` checkpoint. DOCX packaging does not repeat that API call. New written resumes are held as **Review required**, with no `applications.ready.v1` event until the user approves the exact artifact in **View resume**. Older fact-selection drafts remain readable for compatibility.
-
-GPT writes a summary and 2–5 bullets per selected experience/project entry. The response schema restricts source IDs to the saved profile. Validation rejects unknown/duplicate entries, new numbers absent from cited sources, unsupported skill names, omitted employment, and omission of every project when projects exist. Education and structured heading/date/link data are copied locally. These checks do not prove semantic truth: reviewing the generated claims remains mandatory. No account creation or application submission is enabled.
-
-Failures remain visible. If a process crashes after an API response but before saving, an API call may be repeated and billed again; local acknowledgements do not guarantee exactly-once billing.
-
-The browser and worker communicate through the local durable outbox/queue, not this ChatGPT conversation. A Kafka relay can later replace the transport behind this event contract. The profile hash is saved with every draft; only verified facts are sent to the model, not arbitrary profile/contact fields.
-
-
-## Agent 2 artifact handoff
-
-Agent 2 now includes two durable internal steps: grounded GPT writing and DOCX packaging. A persisted draft is a checkpoint; packaging retries do not call GPT again. After successful packaging and user approval, the system publishes `applications.ready.v1` with the full job snapshot, local resume URI, file SHA-256, profile version, event/correlation IDs, and structural validation report. The application queue is separate from the discovery/resume queue. Agent 3 is not running and no application is submitted.
-
-Start Agent 2 after configuring the verified profile and API environment:
+From the repository root, stop old dashboard/worker processes, install dependencies, then run:
 
 ```powershell
 python -m pip install -r requirements.txt
-python -m agent.resume_worker --profile data/profile.json --watch --limit 10
+python -m agent.app
 ```
 
-To package already-saved drafts without API calls (requires the same profile version that generated those drafts):
+Set `OPENAI_API_KEY` and `OPENAI_MODEL` in this terminal's environment before starting. Keep credentials private; never paste them into the profile or commit them. The launcher opens the server at http://127.0.0.1:8765 and waits for a verified profile before starting Agent 2. Create/import/edit your profile on the website. No manual JSON editing is required. The launcher stays running until Ctrl+C.
+
+Use one launcher/dashboard per database. Relative paths resolve from your current directory; always run from the same repository root. Defaults are `data/agent.db`, `data/profile.json`, and `artifacts/resumes`. Back up these together before upgrading. Do not delete your database to refresh the page.
+
+## Discovery and automatic processing
+
+1. Enter title alternatives separated by `|`, such as `Software Engineer | Java Developer`.
+2. Select sources (`directory:verified` uses mapped company feeds), countries, optional locations/JD phrases, and excluded title words. Empty exclusions permit senior titles.
+3. Choose a time window and its meaning: **employer publication** requires a verified posting timestamp; **first discovered** uses when this workspace first found the job. First discovered does not mean newly posted. Older records with unknown first-seen time remain unknown.
+4. Click **Scan now** to save and run the search. Future scheduled scans reuse these filters. Scans run sequentially across sources, isolate failures, and deduplicate jobs.
+5. Agent 2 rechecks the queued JD against the latest manual search filters before spending an API call. It writes from the verified profile, validates the response, renders and checks the DOCX, and atomically sends resume + JD + job URL to Agent 3 queue.
+
+The default repeat interval is 15 minutes. Change it on the website (5–1440 minutes), or use 0 to disable. The setting survives restarts. Discovery runs only while the app is running and after an initial search. The activity timeline reports source failures and counts. The Agent 2 indicator uses a heartbeat, independently of dashboard connectivity.
+
+Successful tasks disappear from the **active Resume queue**. Their records and drafts remain available in history; the **Agent 3 queue** shows completed bundles. Readiness means the configured structural and source checks passed, not human factual approval or verified eligibility. Review generated resumes before real applications; semantic truth cannot be guaranteed by schema checks.
+
+## Worker modes and recovery
+
+For separate terminals:
 
 ```powershell
-python -m agent.resume_worker --profile data/profile.json --render-only --limit 10
+python -m agent.dashboard
+python -m agent.resume_worker --watch
 ```
 
-The resume header is kept local; only professional facts are sent to GPT. The profile fingerprint includes header data so the saved artifact remains tied to the exact input version. Adding a header to an old headerless profile changes its version; older drafts cannot be silently rebound to the new profile.
+`--watch` without `--limit` runs continuously. `--limit 10` deliberately stops after ten task attempts. Without `--watch`, the default is one task. Failures are recorded with bounded retries; one failed regeneration does not stop other jobs.
 
-DOCX artifacts default to `artifacts/resumes`, configurable with `--artifact-dir`. This is a local-storage adapter: agents on this machine share the same database and artifact directory. For different hosts, replace it with shared artifact storage; `local://` is a logical locator, not a web-accessible URL. The dashboard offers checked DOCX downloads by artifact ID and rejects downloads if the stored checksum fails.
-
-The built-in template uses Letter paper, Calibri 8-point body text, a 23-point centered name, bold section headings, and clickable verified links. A 2,500-word content budget prevents unbounded output; it does not prove a one-page layout. A representative one-page fixture was rendered and visually inspected during development. Runtime validation checks ZIP integrity, exact validated draft/header text, all link targets, and typography; `page_count_verified` remains false in the outgoing message.
-
-Missing credentials/profile/header or dependencies stop before model use. Worker errors and render errors are recorded separately. A rendering failure, profile mismatch, changed fact, or failed outgoing-event transaction never creates an application-ready queue entry. Files are atomically saved under content hashes before the outgoing DB transaction. Failed transactions can leave harmless unreferenced files, reserved for future garbage collection.
-
-Message fields:
-
-| Field | Meaning |
-| --- | --- |
-| schema_version | Version of the JSON contract, not the model or candidate version |
-| event_id | Unique ID of this message |
-| correlation_id | Shared ID connecting one job workflow |
-| job_id | Stable identity of the job |
-| profile_version | Fingerprint of the verified candidate input |
-| resume.artifact_id | Identity of the stored resume file |
-| resume.sha256 | File fingerprint used to detect changes |
-
-`ready_for_application` means the artifact is available for Agent 3 to inspect and begin its workflow. It does not mean legal/work-authorization eligibility has been assessed, missing requirements have been waived, or submission has been authorized by a new policy. Those decisions remain in the later application module.
-
-### Create your profile in the browser
-
-Start the dashboard with `python -m agent.dashboard`, then choose **Resume profile**
-or open http://127.0.0.1:8765/profile. Enter your name, contact details, professional
-links, and separate resume entries. Review the accuracy checkbox and click **Save
-profile**. You can return to this page to edit your saved details; no JSON editing
-is needed.
-
-The default dashboard saves to `data/profile.json`, which is excluded from Git.
-Run Agent 2 with `python -m agent.resume_worker --profile data/profile.json --limit 1`
-in the terminal with your API key and model configured. Restart an already-running
-worker after profile edits: it keeps the profile version loaded at startup.
-Existing generated resumes are not regenerated automatically.
-
-For a custom database location, the profile defaults to `profile.json` beside the
-database. Override the dashboard save path with `--profile`, and give the worker
-that same path. This form currently edits one local profile.
-
-### Import your standard resume and preview its layout
-
-On **Resume profile**, choose your existing paragraph-based DOCX (up to 2 MB)
-and click **Import DOCX for review**. Import fills the form without saving,
-verifying claims, or calling GPT. Review the entries, headline, dates, section
-assignments, and links; confirm accuracy and save.
-
-Imported experience and project entries retain their heading, metadata, bullets,
-and hyperlink targets as a single selectable group. When editing an imported
-entry, keep its paragraph count; to restructure it, remove it and add a fresh
-entry. Import currently recognizes Summary, Technical Skills, Professional
-Experience, Selected Engineering Projects, Education, and their common short
-headings. Tables are rejected rather than silently skipped.
-
-**Download saved profile resume** produces a full-profile DOCX with no model
-call and no application-queue event. The compact reference template uses Calibri,
-a centered name/headline/contact block, blue uppercase section headings and rules,
-bold role/project headings, bullets, and right-aligned tabbed dates/links.
-It supports multiple pages (2,500-word limit); page count is not enforced at runtime.
-The preview includes every saved entry; job-tailored Agent 2 output rewrites relevant
-experience/project groups from that same profile, with a review gate. Existing drafts and generated resumes retain their
-original profile version and are not overwritten by an import.
-
-### Regenerate and view an existing resume
-
-Each completed resume now has **View resume**, **Download checked DOCX**, and
-**Regenerate resume** actions in the pipeline. View opens an escaped HTML reading
-preview of the actual stored DOCX inside the dashboard; Word pagination and exact
-spacing can differ.
-
-Save/import your full profile first. Regenerate queues a fresh GPT writing request using
-a snapshot of that saved profile and the job's original JD. Keep Agent 2 running:
+Existing resumes held at `review_required` are recovered automatically at worker startup if their job still matches and their artifact checksum is intact. To do this without another GPT call:
 
 ```powershell
-python -m agent.resume_worker --profile data/profile.json --watch --limit 10
+python -m agent.resume_worker --handoff-only
 ```
 
-The limit covers all worker tasks, including ordinary queued jobs; generation uses
-your configured API key/model and incurs API usage. Render-only mode does not
-process regeneration requests. The dashboard shows queued/processing/completed
-or failure states. Repeated clicks cannot enqueue concurrent replacements for the
-same resume. Failed replacements retain the previous artifact, and successful
-ones archive its draft, application payload, and unpublished ready event in
-`resume_revision_history`. Old artifact downloads remain available.
+This retains the verified-profile requirement but does not require an API key. Nonmatching jobs are marked for requalification, corrupt/missing files are blocked, and neither is silently published. Existing already-ready bundles are not rewritten.
 
-Replacement is supported only before downstream handoff. An already published
-application-ready event is rejected. The current local outbox is replaced
-atomically with the revised artifact; a future broker relay must coordinate with
-application_queue.status and exclude regenerating applications before publication.
-
-### First controlled writer run
-
-Stop older workers and keep the dashboard on the same database. The two already
-queued regeneration requests do not need another button click. Process only one:
+To retain an explicit manual review gate instead of automatic handoff:
 
 ```powershell
-python -m agent.resume_worker --profile data/profile.json --limit 1
+python -m agent.app --require-resume-review
 ```
 
-Open **Resume queue → View resume**, compare the draft against **View draft and
-source evidence**, then approve only if the claims are accurate. The Agent 3 tab
-shows approved entries only. Approval checks the exact artifact ID and checksum
-so a stale preview cannot approve a newer revision.
-
-Offline validation covers profile → writer response validation → DOCX → HTML
-preview → approval → application-ready event and regeneration. It uses fixed
-model-response fixtures, not a live model evaluation. Live quality still requires
-one controlled API call with the user's profile and JD.
-
-### Resume generation checkpoints and bullet errors
-
-Agent 2 now uses one consistent 1–5 bullet contract. A short source can produce one
-supported bullet instead of padding the resume. Errors identify the entry/source
-and actual bullet count. Saved v1 drafts remain readable.
-
-Completed JSON responses are saved locally **before validation**. Both initial and
-replacement processing reuse the saved response when the same request is retried;
-a validation failure does not cause another model call for that request. Clicking
-Regenerate creates a new request and may incur a new API charge.
-
-Inspect saved responses without credentials or a running worker:
+To package saved drafts without calling GPT:
 
 ```powershell
+python -m agent.resume_worker --render-only --limit 100
+```
+
+Use **Regenerate resume** only when changing the desired content/profile; it creates a new request. The previous file is retained until the replacement succeeds. Published downstream events cannot be silently replaced. **View resume** shows the saved DOCX's reading preview; exact Word pagination is not guaranteed.
+
+Diagnostics:
+
+```powershell
+python -m agent.resume_worker --status
 python -m agent.resume_checkpoint --database data/agent.db
-python -m agent.resume_checkpoint --database data/agent.db --id <checkpoint-id>
 ```
 
-The second command reports entry bullet counts and runs current validation against
-the saved evidence. It does not change queues, approve a resume or call GPT.
-`--status` and `/api/diagnostics` also include recent checkpoint metadata.
-Failures from versions before checkpoint storage cannot be replayed.
+A normal successful resume requires one GPT request. Returned responses are checkpointed before validation, so retrying validation/rendering does not repeatedly pay for the same saved response. An explicit regeneration is a new request. API/network failures before a response is saved can require another request.
 
-After pulling the bundled update, restart the dashboard and worker. Review the
-saved profile first. For an old failed regeneration, create one new regeneration
-request and process one task; inspect any checkpoint error before requesting more.
-Structural checks are not a guarantee of factual truth: compare rewritten claims
-with their cited evidence and approve the exact resume before downstream use.
-See `docs/architecture.md` for implemented boundaries and remaining work.
+## Resume evidence and formatting
 
+Import a standard DOCX on `/profile`, review its parsed experience/projects/education, and save verified facts and header fields. Include all actual experience, skills, dates and projects. The model receives all saved professional facts, their layout blocks, and the full queued JD; contact data stays in the local renderer. It cannot access your regular ChatGPT conversations or infer missing resume facts.
 
-### Complete an excerpt-only market lead (no model call)
+The writer returns structured JSON with source references. Validation rejects unknown or duplicate sources, unsupported skill names, unsupported numbers and omitted required sections. It allows 1–5 evidence-supported bullets; it must not invent extra achievements to fill space. The deterministic DOCX renderer preserves headings, dates, education and links. A saved draft carries its original profile snapshot, so editing your profile while jobs are processing does not invalidate that draft.
 
-If an Adzuna lead shows **needs full JD** in **Fetched jobs**, use **Paste complete JD**.
-Copy the complete employer description from its original posting (300–80,000 characters),
-optionally enter the employer's direct HTTP(S) posting URL, and explicitly confirm
-that it is the full description. The dashboard re-runs the *stored search rules*
-against the pasted text and, only if it matches, transactionally creates one
-resume-queue request and one durable event. Nonmatches remain excluded.
+## Actual source coverage
 
-The pasted description is **user supplied and not independently verified**.
-Review job provenance, eligibility, and resume claims before any downstream
-application. This workflow does not scrape a website, spend GPT tokens, or submit
-an application. Existing excerpt records without stored rules need one new
-discovery run before they can be enriched. Re-running a market search preserves
-an already-supplied full JD instead of reverting it to a shorter excerpt.
+Live adapters: Greenhouse, Lever, Ashby and SmartRecruiters. `directory:verified` expands only mapped feeds, not all 299 links in the company directory. Explicit board tokens can add employers using supported adapters. Adzuna market search requires its credentials/configuration; excerpts need full-JD enrichment before enqueueing.
 
-Test locally: `python -m unittest discover -s tests -v`.
+There is no universal “every job board” connector. LinkedIn, Indeed, Workday and other unimplemented providers are shown as unavailable. Detecting an ATS from a URL does not mean its discovery connector exists. Source failures are visible; missing publication timestamps are never replaced with employer update timestamps.
 
-
-## Expanded company discovery: 299-company watchlist and official ATS feeds
-
-The uploaded directory compiled January 14, 2026 is imported into
-`catalog/company_careers_directory.json`: **299 employer entries**, grouped
-by industry, with **296 distinct careers URLs**. These are reference links
-(not live feeds and not a guarantee that the company is currently hiring).
-
-`catalog/verified_public_boards.json` currently maps **10 named companies**
-to identifiable public ATS boards (Greenhouse and Lever). It includes
-Cloudflare, Palantir, Stripe, Coinbase, Robinhood, Airbnb, DoorDash, Okta,
-Block and Roblox. The source URLs are independently identified, but actual
-API availability and job counts are tested at discovery runtime.
-The other **289 companies have no verified live-board connector**; the agent
-does not invent or scrape ATS endpoints from their names.
-
-To search the directory without making network requests:
+## Validation
 
 ```powershell
-python -m agent.company_directory --search cloud
-python -m agent.company_directory --category Technology --limit 40
-python -m agent.company_directory --sources
+python -m unittest discover -s tests -v
 ```
 
-In the dashboard, expand **Company careers directory**, search by name, and
-click **Use verified company feeds**. It fills the Sources field with
-`directory:verified`. Keep the **Allowed countries** field set to `US`
-to avoid jobs based outside the USA. Searching a specific city such as
-`Kansas City` matches more precise location labels such as
-`Kansas City, MO, US`. Ambiguous locations without identifiable country
-are excluded when the US filter is enabled; do not assume remote means US.
+Tests cover source parsing/pagination, title/country/date filters, repeated scans, queue deduplication, worker leases, response checkpoints, DOCX validation, regeneration, HTTP endpoints and atomic handoff recovery. GPT results in tests are fixtures; this does not establish live-provider uptime or factual accuracy of arbitrary generated resumes. CI runs on Windows and Linux across Python 3.11–3.13.
 
-Recommended role prompt:
-`Software Engineer | Backend Software Engineer | Java Developer | Software Developer`.
-Each term is an alternative title. Required JD phrases are **ALL required**:
-`Java, Spring Boot` rejects postings that don't contain both; leave this
-field blank for broad discovery and inspect the full JD before approval.
-
-Start the regular dashboard (Terminal 1) and separate resume/application
-workers (Terminals 2/3) in their existing setup. Or configure the default
-sources for Terminal 1:
-
-```powershell
-python -m agent.dashboard --sources-file examples/sources.json
-```
-
-The checked-in example now uses `directory:verified`; it no longer
-targets the Greenhouse demonstration board.
-
-### More company APIs / future extension
-
-- `greenhouse:token`, `lever:company`, `ashby:board`: existing employer
-  feed adapters, plus `smartrecruiters:company` for SmartRecruiters' public
-  Posting API. SmartRecruiters fetches the public list and individual job
-  details (with a 200 matching-JD cap); missing full descriptions are marked
-  `needs_full_jd`, never silently submitted to Agent 2.
-- Add new verified board links in `catalog/verified_public_boards.json`
-  only after following an employer's careers page to its genuine public ATS
-  board and recording a matching HTTPS proof URL. The strict board-source
-  allowlist prevents arbitrary crawling. Directory group searches are
-  capped at 20 approved boards per run. One unavailable board is reported
-  in activity without discarding other employers' matches.
-- Official LinkedIn/Indeed job search is **not connected**. Both providers'
-  available partner/developer APIs focus on approved partnerships, employer
-  posting or recruiting flows, not unrestricted personal job searches. This
-  update does not automate LinkedIn/Indeed scraping, bypass sign-in, use
-  third-party browser scraping, or imply a paid data provider is free.
-  Add a compliant licensed search provider only with verified API access,
-  terms and key management.
-
-No API key is needed for the 10 curated public ATS board connections.
-Adzuna still needs its own keys and returns excerpts pending full-JD
-enrichment. The discovery pipeline remains read-only; it cannot submit
-applications. Agent 2/3 use the same existing SQLite queues and database.
-Run `python -m unittest discover -s tests -v` for offline regression tests.
-
-
-## Agent 1: auditable refreshes, job observation history and source health
-
-**Goal:** A scan must tell you which employer APIs were checked, how many
-postings were actually returned, how many were new or previously observed,
-why jobs were excluded, and how many fresh resume tasks were queued. A
-"completed" run alone is **not** evidence that new relevant jobs exist.
-
-### Start Agent 1 with automatic scans (opt-in)
-
-```powershell
-git switch main
-git pull --ff-only origin main
-python -m agent.dashboard --sources-file examples/sources.json --scan-every-minutes 60
-```
-
-- On first use, click **Scan now** once with your chosen titles, verified
-  employer feeds and **US** country filter. This persists the exact manual
-  request; subsequent scheduled scans replay that same request.
-- Only the dashboard process schedules discovery. **Browser UI polling
-  every two seconds does not fetch employer jobs.**
-- Automatic scanning is off unless you pass `--scan-every-minutes N`
-  (valid N: 5–1440). It runs while Terminal 1 remains open, is not a
-  cloud/background service, and does not retroactively run missed scans
-  during machine shutdown. Restart it with the same flag after a reboot.
-- Scans are serialized; no concurrent discovery request is silently
-  interleaved. A scheduled run can be skipped while another run is active.
-- The dashboard shows next scan and the latest completed scan in local
-  time, alongside source-by-source fetched/new/existing/matched/queued/error
-  counters. A successful API call returning **zero** postings is recorded
-  as zero rather than displayed as fresh results. Provider errors are
-  counted and reported without leaking API credential strings.
-
-### Timeline semantics
-
-- **Latest scan** is a filtered view of jobs seen in that discovery run.
-  **Saved history** contains previously observed jobs and is not a claim
-  that they were found again. Existing resume-queue entries persist.
-- `first_seen_at` is when this local agent **first ingested a new job**;
-  `last_seen_at` is updated after a later successful observation;
-  `last_run_id` identifies the most recent successful observation. These
-  are stored in SQLite without resetting stable job IDs or requeueing jobs
-  that Agent 2 already processed.
-- Older records imported before this migration have unknown
-  `first_seen_at` (null) rather than an invented timestamp. Their
-  `last_seen_at` appears only when they are observed again.
-- `source_posted_at` is displayed only if a provider explicitly supplied
-  a posting/release date; the GUI labels absent values as "Not provided by
-  source". Ashby `publishedAt`, SmartRecruiters `releasedDate`, and
-  Adzuna `created` are the currently supported provider metadata keys.
-  No date from the agent itself is represented as the employer's posting date.
-- `discovery_runs` stores manual/scheduled triggers and finished times;
-  `source_scans` stores durable per-run source reports. The migration
-  adds columns/tables to the existing local SQLite DB without deleting jobs,
-  resume artifacts, or pending application handoffs.
-
-### Scope and acceptance
-
-Run `python -m unittest discover -s tests -v` for deterministic offline
-tests, then perform two **live** scans using the same verified employer boards
-and inspect the timeline. Actual provider API availability, how many current
-US jobs exist, whether employers supply dates, and application eligibility
-must be verified from real responses: offline CI cannot establish those.
-This increment deliberately does not add LinkedIn/Indeed scraping, Gmail,
-Agent 2 resume changes, or Agent 3 submission changes.
-
-### Verifiable posting-age filters (7h / 24h / 3d)
-
-In **Start a discovery run**, select one of **7 hours, 24 hours, 3 days**
-or **Any date**. The default for a new browser is **Any date**, because many public boards do not provide a trustworthy publication timestamp; strict windows are user-selectable. The selection
-persists with the exact manual search criteria and is replayed by scheduled
-scans. The backend also accepts `posted_within_hours` values 7, 24, 72, 0.
-
-**Precise semantics:** Strict time filters use *only an employer-supplied,
-timezone-aware publication timestamp*, e.g. Ashby `publishedAt` or
-SmartRecruiters `releasedDate` when it contains a full datetime.
-Greenhouse Job Board API does not guarantee publication time; Lever
-`createdAt` is when a record was created, not publication; Adzuna
-`created` is a provider listing date. The latter three **never become
-invented employer posting dates**. For those sources, matching roles are
-visible with **date_unknown** status but are **not automatically queued**
-under a strict window. Jobs older than the selected window are **excluded**.
-If you instead select **Any date**, the time gate is disabled and otherwise
-qualifying unknown-date jobs can be queued, with no claim that they are recent.
-
-**Relevance first:** The scan still reports raw API return counts honestly.
-Postings without any matching role title are counted as `title_filtered`
-and skipped **before persistence**. Job matching and seniority exclusions
-remain deterministic, driven by the prompt and the separate excluded words
-field. If you enter only `United States` as an **Exact location**, Agent 1
-normalizes that to allowed country `US` rather than incorrectly rejecting
-`San Francisco, CA` as outside the United States. To search nationwide,
-leave Exact locations blank and set Allowed countries to US. A true city
-filter, such as Kansas City, remains enforced.
-
-**Progress:** Sources are fetched one after another. Each source shows raw
-fetched, processed, title skipped, matching-title new/existing records,
-matched/unknown/too old/queued and failure counts. Progress is committed
-after each batch of 25 postings, and one failed provider does not stop
-the remaining providers. The scheduler continues to run periodic scans
-only while Terminal 1 remains open.
-
-**Troubleshooting conflicting Python versions** in the terminal:
-
-```powershell
-python -c "import agent.dashboard as d; print(d.__file__)"
-python -m agent.dashboard --help
-```
-
-If `--scan-every-minutes` is not in the help output, you are running an old
-version from the wrong Git branch/project path. Stop the old dashboard, update
-your local code, and relaunch **only one** instance on port 8765.
-
+See [architecture](docs/architecture.md) for queue contracts and failure behavior.

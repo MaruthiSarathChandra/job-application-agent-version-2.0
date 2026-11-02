@@ -131,7 +131,7 @@ class IntakeStore:
         checked_at = datetime.now(timezone.utc).isoformat(timespec='seconds')
         with self.connection:
             self.connection.execute('BEGIN IMMEDIATE')
-            prior = self.connection.execute('SELECT payload FROM jobs WHERE identity_key=?', (identity,)).fetchone()
+            prior = self.connection.execute('SELECT payload,first_seen_at FROM jobs WHERE identity_key=?', (identity,)).fetchone()
             # A repeat market search must not replace a user-confirmed full JD
             # with a new excerpt. New search rules can still change qualification.
             if prior and job.get('description_completeness') == 'excerpt':
@@ -145,6 +145,7 @@ class IntakeStore:
                         job['discovery_url'] = url
                         job['description_source_url'] = saved['description_source_url']
                         url = normalize_url(saved['url'])
+            job={**job,'first_seen_at':prior[1] if prior else checked_at}
             result = qualify(job, requirements)
             payload = {**job, 'url': url, 'qualification': result}
             self.connection.execute('''INSERT INTO jobs(id,identity_key,url,ats,payload,first_seen_at,last_seen_at,last_run_id)

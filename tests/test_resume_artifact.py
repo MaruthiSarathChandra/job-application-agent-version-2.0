@@ -82,6 +82,11 @@ class ArtifactTests(unittest.TestCase):
         self.assertEqual(len(self.service.snapshot()['applications']),1)
 
     def test_profile_mismatch_does_not_publish(self):
+        # Legacy drafts without immutable profile evidence must fail closed.
+        with self.worker.connect() as db:
+            draft=json.loads(db.execute('SELECT result FROM resume_drafts').fetchone()[0])
+            draft.pop('_profile_snapshot',None)
+            db.execute('UPDATE resume_drafts SET result=?',(json.dumps(draft),))
         self.packager('different-version').process_one()
         self.assertEqual(self.service.snapshot()['applications'],[])
         self.assertEqual(self.service.snapshot()['queue'][0]['status'],'resume_render_error')

@@ -46,7 +46,8 @@ def enqueue(service, sequence):
         return identifier
 
 class Regenerator:
-    def __init__(self, service, model, artifact_dir, generator=call_gpt):
+    def __init__(self, service, model, artifact_dir, generator=call_gpt, auto_handoff=False):
+        self.auto_handoff=auto_handoff
         self.service,self.model,self.artifact_dir,self.generator=service,model,artifact_dir,generator
         self.last_result = "idle"
         self.seen_requests = set()
@@ -73,9 +74,13 @@ class Regenerator:
         try:
             profile=json.loads(task['profile'])
             job=json.loads(task['snapshot'])
+            from .handoff import current_decision
+            if current_decision(self.service,job)['status']!='matched':
+                raise ValueError('Job no longer matches current search filters; regeneration blocked')
             from .resume_checkpoint import generate_and_validate
             draft=generate_and_validate(self.service, 'regeneration:'+task['id'], job,
                                         profile, self.model, self.generator)
+            draft['_profile_snapshot']=profile
             draft.update(job_id=task['job_id'],queue_order=task['queue_order'],
                          profile_version=task['profile_version'],model=self.model,
                          schema_version=1,event_id=str(uuid.uuid4()),correlation_id=task['job_id'])
@@ -100,7 +105,8 @@ class Regenerator:
                          'job_id':task['job_id'],'profile_version':task['profile_version'],'job':job,
                          'resume':{k:v for k,v in artifact.items() if k!='path'},
                          'unsupported_requirements':draft['missing_requirements'],'eligibility_status':'not_assessed',
-                         'status':'review_required' if draft.get('requires_review') else 'ready_for_application','application_queue_order':app['sequence'],
+                         'job_url':job['url'],'handoff_mode':'automatic' if self.auto_handoff else 'review','review_status':'not_reviewed',
+                         'status':'review_required' if draft.get('requires_review') and not self.auto_handoff else 'ready_for_application','application_queue_order':app['sequence'],
                          'revision_id':task['id'],'supersedes_artifact_id':app['resume_artifact_id']}
                 db.execute('UPDATE resume_drafts SET profile_version=?,result=? WHERE queue_order=?',
                            (task['profile_version'],json.dumps(draft),task['queue_order']))
@@ -108,7 +114,7 @@ class Regenerator:
                            (artifact['artifact_id'],json.dumps(payload),payload['status'],task['job_id']))
                 # This local outbox has not been published. Archive its old value above
                 # and replace it atomically with the current application revision.
-                if draft.get('requires_review'):
+                if draft.get('requires_review') and not self.auto_handoff:
                     db.execute('DELETE FROM outbox WHERE event_key=? AND published_at IS NULL',(event_key,))
                 else:
                     db.execute('INSERT INTO outbox(event_key,topic,payload) VALUES(?,?,?) ON CONFLICT(event_key) DO UPDATE SET payload=excluded.payload',
