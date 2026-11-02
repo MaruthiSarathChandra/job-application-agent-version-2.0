@@ -470,7 +470,15 @@ class Service:
                 saved_stats[status] = db.execute(
                     "SELECT COUNT(*) FROM jobs WHERE json_extract(payload,'$.qualification.status')=?",
                     (status,)).fetchone()[0]
+            pipeline_counts = {}
+            for row in db.execute("SELECT status,COUNT(*) AS n FROM application_queue GROUP BY status") if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='application_queue'").fetchone() else []:
+                pipeline_counts[row['status']] = row['n']
+            prepared_count = db.execute("SELECT COUNT(*) FROM applied_history").fetchone()[0]
             return {
+                'pipeline_counts':{**pipeline_counts,'confirmed_submissions':prepared_count},
+                'agent3_tasks':[dict(x) for x in db.execute(
+                    'SELECT application_order,status,last_error,attempts,updated_at FROM agent3_tasks ORDER BY application_order')
+                    ] if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent3_tasks'").fetchone() else [],
                 'saved_stats':saved_stats,
                 'build_version':'2026.11-search-and-handoff',
                 'board_options':board_options(self.default_sources),
