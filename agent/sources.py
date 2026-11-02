@@ -38,8 +38,8 @@ def read_json(url):
 
 
 def validate_sources(sources):
-    if not isinstance(sources, list) or not 1 <= len(sources) <= 10:
-        raise ValueError('Configure 1–10 boards')
+    if not isinstance(sources, list) or not 1 <= len(sources) <= 50:
+        raise ValueError('Configure 1–50 boards')
     result = []
     for source in sources:
         if not isinstance(source, str) or not re.fullmatch(r'(greenhouse|lever|ashby|smartrecruiters):[A-Za-z0-9_-]{1,80}|adzuna:[a-z]{2}|directory:verified', source):
@@ -49,7 +49,7 @@ def validate_sources(sources):
     return result
 
 
-def fetch_board(source, reader=read_json):
+def fetch_board(source, reader=read_json, page_size=None, offset=0):
     validate_sources([source])
     provider, company = source.split(':')
     if provider in ('smartrecruiters','directory'):
@@ -62,16 +62,18 @@ def fetch_board(source, reader=read_json):
     elif provider == 'adzuna':
         raise ValueError('Adzuna requires a search query; use fetch_source')
     else:
-        rows = reader(f'https://api.lever.co/v0/postings/{company}?mode=json&limit=100&skip=0')
+        rows = reader(f'https://api.lever.co/v0/postings/{company}?mode=json&limit={page_size or 100}&skip={offset}')
         # Bounded pagination avoids silently treating page one as the whole board.
         page = rows
-        while len(page) == 100:
+        while page_size is None and len(page) == 100:
             if len(rows) >= 2000:
                 raise ValueError('Lever board exceeds 2,000-job run limit')
             page = reader(f'https://api.lever.co/v0/postings/{company}?mode=json&limit=100&skip={len(rows)}')
             rows = rows + page
     if not isinstance(rows, list) or len(rows) > 5000:
         raise ValueError('Invalid or oversized board')
+    if page_size is not None and len(rows)>page_size:
+        raise ValueError('Provider ignored the requested page size; cursor not advanced')
     jobs = []
     for row in rows:
         try:
@@ -79,6 +81,8 @@ def fetch_board(source, reader=read_json):
                 job = dict(url=row['absolute_url'], title=row['title'],
                            location=row.get('location', {}).get('name') or 'Unspecified',
                            description=plain(row.get('content')), requisition_id=str(row['id']))
+                if isinstance(row.get('first_published'),str):
+                    job['source_posted_at']=row['first_published']
                 if isinstance(row.get('updated_at'),str):
                     job['source_updated_at'] = row['updated_at']  # NOT a posted-at timestamp
             elif provider == 'ashby':
@@ -113,7 +117,7 @@ def fetch_board(source, reader=read_json):
     return jobs
 
 
-def fetch_smartrecruiters(source, rules, reader=read_json):
+def fetch_smartrecruiters(source, rules, reader=read_json, page_size=None, start_offset=0):
     """Read publicly published postings + full details via official Posting API."""
     validate_sources([source])
     provider, board = source.split(':', 1)
@@ -121,18 +125,18 @@ def fetch_smartrecruiters(source, rules, reader=read_json):
         raise ValueError('Expected a SmartRecruiters source')
     base = f'https://api.smartrecruiters.com/v1/companies/{board}/postings'
     rows = []
-    offset = 0
+    offset = start_offset
     # Bounded traversal, public listings ONLY. No third-party career URL fetch.
     while True:
-        payload = reader(f'{base}?limit=100&offset={offset}&destination=PUBLIC')
+        payload = reader(f'{base}?limit={page_size or 100}&offset={offset}&destination=PUBLIC')
         page = payload.get('content') if isinstance(payload, dict) else None
-        if not isinstance(page, list) or len(page) > 100:
+        if not isinstance(page, list) or len(page) > (page_size or 100):
             raise ValueError('SmartRecruiters returned an invalid postings page')
         rows.extend(page)
         offset += len(page)
-        if offset > 2000:
+        if page_size is None and offset > 2000:
             raise ValueError('SmartRecruiters board exceeds 2,000 postings per run')
-        if len(page) < 100:
+        if page_size is not None or len(page) < 100:
             break
     wanted = rules.get('title_keywords', [])
     selected = [row for row in rows
@@ -140,7 +144,10 @@ def fetch_smartrecruiters(source, rules, reader=read_json):
                 and (not wanted or any(term.casefold() in row['name'].casefold() for term in wanted))]
     if len(selected) > 200:
         raise ValueError('SmartRecruiters matched over 200 postings; narrow the job titles')
-    jobs = []
+    # Preserve title-skipped listing rows in sliced mode so search counters reflect
+    # the entire provider page, without fetching unnecessary full descriptions.
+    jobs = ([{'title':row.get('name',''), 'source':source} for row in rows
+             if isinstance(row,dict) and row not in selected] if page_size is not None else [])
     for row in selected:
         identifier = str(row.get('id', ''))
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', identifier):
@@ -171,10 +178,12 @@ def fetch_smartrecruiters(source, rules, reader=read_json):
                             if isinstance(detail.get('releasedDate'),str) else {})})
         except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
             jobs.append({'source':source,'source_error':f'Invalid public posting detail ({type(exc).__name__})'})
+    if page_size is not None:
+        return jobs,len(rows)
     return jobs
 
 
-def fetch_source(source, rules, reader=read_json):
+def fetch_source(source, rules, reader=read_json, market_page=None, market_title=None):
     """Market search and direct boards implement the same producer contract."""
     validate_sources([source])
     if source == 'directory:verified':
@@ -212,8 +221,8 @@ def fetch_source(source, rules, reader=read_json):
     jobs = []
     seen = set()
     # Explicit per-run cap: 3 pages per title, 5 alternative titles.
-    for title in rules['title_keywords'][:5]:
-        for page in range(1, 4):
+    for title in ([market_title] if market_title else rules['title_keywords'][:5]):
+        for page in ([market_page] if market_page else range(1, 4)):
             query = urlencode({'app_id': app_id, 'app_key': app_key, 'what': title, 'results_per_page': 50})
             try:
                 payload = reader(f'https://api.adzuna.com/v1/api/jobs/{country}/search/{page}?{query}')

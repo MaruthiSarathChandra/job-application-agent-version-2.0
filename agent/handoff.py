@@ -11,6 +11,13 @@ def current_decision(owner, job):
         where="WHERE trigger='manual'" if "trigger" in columns else ""
         row=db.execute("SELECT config FROM discovery_runs "+where+" ORDER BY rowid DESC LIMIT 1").fetchone()
     rules=json.loads(row['config'])['rules'] if row else job.get('qualification_rules',{})
+    if rules.get('min_match_percent'):
+        from .matching import profile_skills
+        profile=getattr(owner,'profile',None)
+        if profile is None and getattr(owner,'profile_path',None):
+            from .resume_worker import load_profile
+            profile,_=load_profile(owner.profile_path)
+        if profile:rules={**rules,'profile_skills':profile_skills(profile)}
     return qualify(job,rules)
 
 

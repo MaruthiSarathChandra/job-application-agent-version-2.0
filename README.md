@@ -18,14 +18,17 @@ Use one launcher/dashboard per database. Relative paths resolve from your curren
 ## Discovery and automatic processing
 
 1. Enter title alternatives separated by `|`, such as `Software Engineer | Java Developer`.
-2. Select sources (`directory:verified` uses mapped company feeds), countries, optional locations/JD phrases, and excluded title words. Empty exclusions permit senior titles.
-3. Choose a time window and its meaning: **employer publication** requires a verified posting timestamp; **first discovered** uses when this workspace first found the job. First discovered does not mean newly posted. Older records with unknown first-seen time remain unknown.
-4. Click **Scan now** to save and run the search. Future scheduled scans reuse these filters. Scans run sequentially across sources, isolate failures, and deduplicate jobs.
-5. Agent 2 rechecks the queued JD against the latest manual search filters before spending an API call. It writes from the verified profile, validates the response, renders and checks the DOCX, and atomically sends resume + JD + job URL to Agent 3 queue.
+2. Choose a **job board** or **All connected boards**, **region**, and **publication window** (7 hours, 24 hours, 3 days, or Any).
+3. Optionally choose the maximum years explicitly required in the JD, and minimum technical-skill match (70–100%, or no filter). Match compares recognized JD technical skills against your verified profile; unknown scores/years fail a selected filter. It is not an ATS or hiring probability.
+4. All selected filter categories use **AND**. Alternative titles within the prompt use **OR**. Optional company tokens, city phrases, required JD phrases and excluded title words are under **Advanced**.
+5. Click **Scan now**. Each scan processes up to 55 raw postings per company, then continues from the next durable slice on the next scan. Different providers rotate in order. One provider selected means only that provider; unavailable connectors cannot be selected.
+6. Agent 2 rechecks the JD before GPT, writes from the verified profile, validates and renders the DOCX, then atomically sends resume + JD + job URL to Agent 3 queue.
+
+Greenhouse/Ashby return full-board responses: the app caches them and processes 55 at a time. Lever requests `limit=55`; SmartRecruiters requests 55 listing rows and fetches details only for relevant titles. Adzuna uses 50 per request, its supported page size. These are not universally 55-job network responses. Publication filtering uses employer timestamps; Greenhouse detail lookups obtain `first_published` when needed. Unknown publication times are never invented. See [search and history contracts](docs/search-and-history.md).
 
 The default repeat interval is 15 minutes. Change it on the website (5–1440 minutes), or use 0 to disable. The setting survives restarts. Discovery runs only while the app is running and after an initial search. The activity timeline reports source failures and counts. The Agent 2 indicator uses a heartbeat, independently of dashboard connectivity.
 
-Successful tasks disappear from the **active Resume queue**. Their records and drafts remain available in history; the **Agent 3 queue** shows completed bundles. Readiness means the configured structural and source checks passed, not human factual approval or verified eligibility. Review generated resumes before real applications; semantic truth cannot be guaranteed by schema checks.
+Successful tasks disappear from the **active Resume queue**. **Applied history** is separate and remains empty until Agent 4 reports a confirmed submission with the exact resume and confirmation reference. Their records remain under **Saved jobs** and drafts under **GPT drafts**; the **Agent 3 queue** shows completed bundles. Readiness means the configured structural and source checks passed, not human factual approval or verified eligibility. Review generated resumes before real applications; semantic truth cannot be guaranteed by schema checks.
 
 ## Worker modes and recovery
 
@@ -38,7 +41,7 @@ python -m agent.resume_worker --watch
 
 `--watch` without `--limit` runs continuously. `--limit 10` deliberately stops after ten task attempts. Without `--watch`, the default is one task. Failures are recorded with bounded retries; one failed regeneration does not stop other jobs.
 
-Existing resumes held at `review_required` are recovered automatically at worker startup if their job still matches and their artifact checksum is intact. To do this without another GPT call:
+Existing resumes held at `review_required` are recovered automatically at worker startup if their job still matches and their artifact checksum is intact. Use **Move completed resumes to Agent 3** on the dashboard, or run this without another GPT call:
 
 ```powershell
 python -m agent.resume_worker --handoff-only
@@ -90,3 +93,9 @@ python -m unittest discover -s tests -v
 Tests cover source parsing/pagination, title/country/date filters, repeated scans, queue deduplication, worker leases, response checkpoints, DOCX validation, regeneration, HTTP endpoints and atomic handoff recovery. GPT results in tests are fixtures; this does not establish live-provider uptime or factual accuracy of arbitrary generated resumes. CI runs on Windows and Linux across Python 3.11–3.13.
 
 See [architecture](docs/architecture.md) for queue contracts and failure behavior.
+
+## Agent 3 and Agent 4 status
+
+This repository has queue contracts, not working account-creation or submission adapters. After actual preparation, Agent 3 can POST `/api/applications/prepared` with `job_id`, `artifact_id`, and `prepared: true`. After actual confirmed submission, Agent 4 can POST `/api/applications/submitted` with the same IDs, `submitted: true`, `confirmed: true`, `submission_id`, timezone-aware `submitted_at`, and an HTTPS `confirmation_url`. These endpoints record trusted local worker reports; they do not submit or independently confirm with employers. Do not call them to simulate real applications.
+
+Applied history retains the exact JD, job link, resume artifact and receipt. Failed/unconfirmed outcomes never create an applied record. Repeated identical receipts are idempotent; conflicting receipts are rejected. Once prepared/submitted, regeneration cannot replace the resume used for that application.

@@ -49,6 +49,8 @@ def country_from_job(job):
         return None
     if re.search(r'\b(?:United States(?: of America)?|USA|US)\b', label, re.I):
         return 'US'
+    for code,pattern in {'CA':r'Canada','GB':r'United Kingdom|UK|Great Britain','IN':r'India','AU':r'Australia','DE':r'Germany|Deutschland'}.items():
+        if re.search(r'\b(?:'+pattern+r')\b',label,re.I):return code
     segments = [x.strip() for x in label.split(',')]
     if len(segments) >= 2:
         last = segments[-1]
@@ -66,6 +68,8 @@ def matches_location(label, wanted):
 def qualify(job, requirements):
     """Only explicit title/location rules; never infer legal eligibility from prose."""
     reasons = []
+    if requirements.get('allowed_sources') and job.get('source') not in requirements['allowed_sources']:
+        reasons.append('Job board/company is outside selected sources')
     title = job['title'].casefold()
     wanted = requirements.get('title_keywords', [])
     if wanted and not any(word.casefold() in title for word in wanted):
@@ -88,6 +92,10 @@ def qualify(job, requirements):
     if reasons:
         return {'status':'excluded', 'reasons':reasons,
                 'scope':'configured title/location/JD rules only; full eligibility not assessed'}
+    from .matching import filter_reasons
+    extra=filter_reasons(job,requirements)
+    if extra:
+        return {'status':'excluded','reasons':extra,'scope':'explicit experience and technical-skill filters'}
     age = date_decision(job,requirements)
     if age:
         return age
@@ -146,6 +154,8 @@ class IntakeStore:
                         job['description_source_url'] = saved['description_source_url']
                         url = normalize_url(saved['url'])
             job={**job,'first_seen_at':prior[1] if prior else checked_at}
+            from .matching import annotate
+            job=annotate(job,requirements)
             result = qualify(job, requirements)
             payload = {**job, 'url': url, 'qualification': result}
             self.connection.execute('''INSERT INTO jobs(id,identity_key,url,ats,payload,first_seen_at,last_seen_at,last_run_id)

@@ -87,6 +87,17 @@ def rules_from_request(body):
     if basis not in ('published','first_seen'):
         raise ValueError('Choose published or first_seen time basis')
     rules['time_basis']=basis
+    ceiling=body.get('max_required_years')
+    if ceiling is not None and (type(ceiling) is not int or not 0<=ceiling<=20):
+        raise ValueError('Experience ceiling must be 0–20 years or blank')
+    threshold=body.get('min_match_percent',0)
+    if type(threshold) is not int or threshold not in (0,70,75,80,85,90,95,100):
+        raise ValueError('Choose a match threshold from 70 to 100, or no filter')
+    size=body.get('batch_size')
+    if size is not None and size!=55:
+        raise ValueError('Discovery batches contain up to 55 postings per company')
+    rules.update(max_required_years=ceiling,min_match_percent=threshold)
+    if size is not None:rules['batch_size']=55
     return prompt.strip(), rules, validate_sources(body.get('sources'))
 
 
@@ -105,7 +116,8 @@ class Service:
         store.close()
         with self.connect() as db:
             from .resume_regeneration import SCHEMA as REGEN_SCHEMA
-            db.executescript(SCHEMA + REGEN_SCHEMA)
+            from .application_history import SCHEMA as HISTORY_SCHEMA
+            db.executescript(SCHEMA + REGEN_SCHEMA + HISTORY_SCHEMA)
             db.execute('CREATE TABLE IF NOT EXISTS workspace_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL)')
             columns = {row[1] for row in db.execute('PRAGMA table_info(discovery_runs)')}
             if 'trigger' not in columns:
@@ -174,9 +186,23 @@ class Service:
         if trigger not in ('manual', 'scheduled'):
             raise ValueError('Unknown scan trigger')
         body = dict(body)
+        if 'board_provider' in body:
+            from .discovery_pages import resolve_sources
+            body['sources']=resolve_sources(body['board_provider'],body.get('sources'),self.default_sources)
         if not body.get('sources'):
             body['sources'] = self.default_sources or (['adzuna:us'] if os.getenv('ADZUNA_APP_ID') and os.getenv('ADZUNA_APP_KEY') else ['directory:verified'])
         prompt, rules, sources = rules_from_request(body)
+        from .company_directory import discovery_sources
+        rules['allowed_sources']=list(dict.fromkeys(board for source in sources for board in (discovery_sources() if source=='directory:verified' else [source])))
+        if rules.get('min_match_percent'):
+            from .resume_worker import load_profile
+            from .matching import profile_skills
+            if not self.profile_path.exists():
+                raise ValueError('Create and verify your resume profile before using the match filter')
+            profile,_=load_profile(self.profile_path)
+            rules['profile_skills']=profile_skills(profile)
+            if not rules['profile_skills']:
+                raise ValueError('Save verified technical skills in your profile before using a match threshold')
         if not self.lock.acquire(blocking=False):
             raise ValueError('A discovery run is already active')
         run_id = str(uuid.uuid4())
@@ -210,7 +236,9 @@ class Service:
         return {'prompt':row['prompt'], 'sources':config['sources'],
                 **{name:rules.get(name,[]) for name in
                    ('excluded_title_keywords','locations','jd_keywords','country_codes')},
-                'posted_within_hours':rules.get('posted_within_hours',0),'time_basis':rules.get('time_basis','published')}
+                'posted_within_hours':rules.get('posted_within_hours',0),'time_basis':rules.get('time_basis','published'),
+                'max_required_years':rules.get('max_required_years'),'min_match_percent':rules.get('min_match_percent',0),
+                **({'batch_size':55} if rules.get('batch_size') else {})}
 
     def scheduled_scan(self, background=True):
         request = self.last_manual_request()
@@ -291,7 +319,8 @@ class Service:
             work_sources = []
             for source in sources:
                 work_sources.extend(discovery_sources() if source == 'directory:verified' else [source])
-            work_sources = list(dict.fromkeys(work_sources))
+            from .discovery_pages import round_robin_sources
+            work_sources = round_robin_sources(list(dict.fromkeys(work_sources)))
             self.event(run_id,'scan_started',f'Scanning {len(work_sources)} verified sources in sequence.')
             wanted = tuple(term.casefold() for term in rules.get('title_keywords', []))
             for ordinal,source in enumerate(work_sources,1):
@@ -302,7 +331,13 @@ class Service:
                                   VALUES(?,?,?,?)""",(run_id,source,'running',self.utc_now()))
                 self.event(run_id,'fetching',f'Source {ordinal}/{len(work_sources)}: {source}')
                 try:
-                    jobs = self.fetcher(source) if self.fetcher else fetch_source(source,rules)
+                    if self.fetcher:
+                        jobs=self.fetcher(source)
+                    elif rules.get('batch_size'):
+                        from .discovery_pages import fetch_slice
+                        jobs=fetch_slice(self,source,rules)
+                    else:
+                        jobs=fetch_source(source,rules)
                     if not isinstance(jobs,list):
                         raise ValueError('Source returned an invalid result')
                     counts['fetched'] = len(jobs)
@@ -323,7 +358,7 @@ class Service:
                             if wanted and not any(term in title.casefold() for term in wanted):
                                 counts['title_filtered'] += 1
                                 continue
-                            result = store.import_job({**job,'qualification_rules':rules,
+                            result = store.import_job({**job,'source':job.get('source') or source,'qualification_rules':rules,
                                                        'intake_run_id':run_id},rules)
                             counts['new_jobs' if result['is_new'] else 'existing_jobs'] += 1
                             decision = result['qualification']['status']
@@ -363,13 +398,19 @@ class Service:
                                     message = f"#{number} · {title} → waiting for resume"
                             if cursor.rowcount:
                                 self.event(run_id,'queued',message)
-                        except (ValueError,TypeError,KeyError,sqlite3.Error) as exc:
+                        except sqlite3.Error:
+                            # Keep the pending page for replay after a transactional failure.
+                            raise
+                        except (ValueError,TypeError,KeyError) as exc:
                             counts['errors'] += 1
                             self.event(run_id,'error',f'{source}: job import failed ({type(exc).__name__})')
                         finally:
                             counts['processed'] += 1
                             if index % 25 == 0:
                                 self._source_progress(run_id,source,counts)
+                    if rules.get('batch_size') and not self.fetcher:
+                        from .discovery_pages import acknowledge_slice
+                        acknowledge_slice(self,source,rules)
                     self.event(run_id,'source_finished',f"{source}: fetched {counts['fetched']}, "
                         f"title-irrelevant {counts['title_filtered']}, new {counts['new_jobs']}, "
                         f"previously seen {counts['existing_jobs']}, matched {counts['matched']}, "
@@ -413,9 +454,14 @@ class Service:
 
     def snapshot(self):
         from .worker_health import status as worker_status
+        from .discovery_pages import board_options
         with self.connect() as db:
             latest = db.execute('SELECT id FROM discovery_runs ORDER BY rowid DESC LIMIT 1').fetchone()
             latest_id = latest['id'] if latest else ''
+            def public_draft(x):
+                draft=json.loads(x['result'])
+                draft.pop('_profile_snapshot',None)
+                return {**dict(x),'result':json.dumps(draft)}
             def row_job(x):
                 return {**json.loads(x['payload']), 'id':x['id'], 'first_seen_at':x['first_seen_at'],
                             'last_seen_at':x['last_seen_at'], 'last_run_id':x['last_run_id']}
@@ -426,6 +472,10 @@ class Service:
                     (status,)).fetchone()[0]
             return {
                 'saved_stats':saved_stats,
+                'build_version':'2026.11-search-and-handoff',
+                'board_options':board_options(self.default_sources),
+                'searched_count':db.execute('SELECT coalesce(sum(processed),0) FROM source_scans').fetchone()[0],
+                'applied_history':[dict(x) for x in db.execute('SELECT * FROM applied_history ORDER BY submitted_at DESC')],
                 'latest_jobs_count':db.execute('SELECT COUNT(*) FROM jobs WHERE last_run_id=?',
                                                (latest_id,)).fetchone()[0],
                 'latest_jobs':[row_job(x) for x in db.execute(
@@ -437,7 +487,7 @@ class Service:
                 'sources': source_catalog(),
                 'applications': [dict(x) for x in db.execute('SELECT sequence,job_id,resume_artifact_id,status,payload FROM application_queue ORDER BY sequence')] if db.execute("SELECT 1 FROM sqlite_master WHERE name='application_queue'").fetchone() else [],
                 'default_sources': self.default_sources,
-                'drafts': [dict(x) for x in db.execute('SELECT queue_order,profile_version,result,created_at FROM resume_drafts ORDER BY queue_order')] if db.execute("SELECT 1 FROM sqlite_master WHERE name='resume_drafts'").fetchone() else [],
+                'drafts': [public_draft(x) for x in db.execute('SELECT queue_order,profile_version,result,created_at FROM resume_drafts ORDER BY queue_order')] if db.execute("SELECT 1 FROM sqlite_master WHERE name='resume_drafts'").fetchone() else [],
                 'runs': [dict(x) for x in db.execute('SELECT * FROM discovery_runs ORDER BY created_at DESC,rowid DESC LIMIT 20')],
                 'activity': [dict(x) for x in db.execute('SELECT * FROM activity ORDER BY id DESC LIMIT 200')],
                 'jobs':[row_job(x) for x in db.execute(
@@ -546,7 +596,7 @@ def make_handler(service):
             if host != f'127.0.0.1:{self.server.server_port}' or (origin and origin != f'http://{host}'):
                 self.reply(403, {'error': 'Only same-origin local requests are allowed'})
                 return
-            if self.path not in ('/api/runs', '/api/profile', '/api/profile/import', '/api/resumes/regenerate', '/api/resumes/approve', '/api/jobs/enrich','/api/discovery/schedule'):
+            if self.path not in ('/api/runs', '/api/profile', '/api/profile/import', '/api/resumes/regenerate', '/api/resumes/approve', '/api/jobs/enrich','/api/discovery/schedule','/api/resumes/handoff','/api/applications/prepared','/api/applications/submitted'):
                 self.reply(404, {'error': 'Not found'})
                 return
             try:
@@ -563,7 +613,17 @@ def make_handler(service):
                 body = json.loads(raw)
                 if not isinstance(body, dict):
                     raise ValueError('Expected a JSON object')
-                if self.path == '/api/discovery/schedule':
+                if self.path == '/api/resumes/handoff':
+                    from .handoff import promote_existing
+                    exists=service.snapshot()['applications']
+                    self.reply(200,{'promoted':promote_existing(service) if exists else 0})
+                elif self.path == '/api/applications/prepared':
+                    from .application_history import prepared
+                    self.reply(200,prepared(service,body))
+                elif self.path == '/api/applications/submitted':
+                    from .application_history import submitted
+                    self.reply(200,submitted(service,body))
+                elif self.path == '/api/discovery/schedule':
                     self.reply(200, service.set_schedule(body.get('every_minutes')))
                 elif self.path == '/api/jobs/enrich':
                     from .enrichment import enrich_job
@@ -585,8 +645,10 @@ def make_handler(service):
                     self.reply(200, service.save_profile(body))
                 else:
                     self.reply(202, {'run_id': service.start(body)})
+            except sqlite3.Error:
+                self.reply(500, {'error': 'Database operation failed; completion was not recorded. Check storage and retry.'})
             except OSError:
-                self.reply(500, {'error': 'Could not save profile. Check local storage permissions.'})
+                self.reply(500, {'error': 'Could not read or save local data. Check file availability and permissions.'})
             except (ValueError, TypeError) as exc:
                 self.reply(400, {'error': str(exc)})
     return Handler

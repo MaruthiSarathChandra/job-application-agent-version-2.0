@@ -47,3 +47,7 @@ Startup recovery can promote already checked `review_required` bundles without G
 Current deployment is one local SQLite workspace with durable logical queues, not Kafka. Consumer receipts and unique event keys provide idempotency in this database; external side effects are not guaranteed exactly once. A future Kafka relay must publish the outbox with at-least-once delivery, and Agent 3 must deduplicate by event/job revision and reconcile submissions. No Gmail access, account creation or submission worker is included in this change.
 
 For multi-host scaling, move state/claims to a shared transactional database, artifacts to object storage, add an outbox relay, and retain the same consumer contracts. Do not run several independent dashboard schedulers against one SQLite file.
+
+## Search and confirmed application history
+
+See [search-and-history.md](search-and-history.md) for the six search controls, AND semantics, durable 55-posting slices, provider limitations, and Agent 3/4 prepared/submitted integration contracts. Saved discoveries are distinct from confirmed applied history.

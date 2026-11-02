@@ -139,14 +139,14 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(service.snapshot()['queue'], [])
         self.assertEqual(service.snapshot()['runs'][0]['status'], 'completed_with_errors')
 
-    def test_discovery_ui_warns_about_stale_single_company_source(self):
+    def test_search_ui_has_explicit_provider_and_and_filters(self):
         html = Path(__file__).resolve().parent.parent.joinpath('agent/web/index.html').read_text(encoding='utf-8')
-        self.assertIn("const DEMO_SOURCE='greenhouse:greenhouse'", html)
-        self.assertIn("Use verified company feeds", html)
-        self.assertIn("if(sourceChoiceWarning())throw Error", html)
-        self.assertIn("saved.sources=['directory:verified']", html)
-        self.assertIn("state.default_sources.join(', ')", html)
-        self.assertIn("sourceChoiceWarning();refresh()", html)
+        for identifier in ('board-provider','region','posted-window','required-years','match-threshold','prompt','appliedtab'):
+            self.assertIn('id="'+identifier+'"',html)
+        self.assertIn('every selected filter below must pass (AND)',html)
+        self.assertIn("option.disabled=!board.available",html)
+        self.assertIn("batch_size:55",html)
+        self.assertIn('Agent 4 confirmed submissions',html)
 
     def test_lever_paginates(self):
         calls = []
