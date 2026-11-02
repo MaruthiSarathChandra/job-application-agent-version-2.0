@@ -143,9 +143,9 @@ class DashboardTests(unittest.TestCase):
         html = Path(__file__).resolve().parent.parent.joinpath('agent/web/index.html').read_text(encoding='utf-8')
         for identifier in ('board-provider','region','posted-window','required-years','match-threshold','prompt','appliedtab'):
             self.assertIn('id="'+identifier+'"',html)
-        self.assertIn('Layer 1 · find jobs by the job titles you enter',html)
-        self.assertIn('Layer 2 · match those title candidates before resume generation',html)
-        self.assertIn('selected criteria below are AND conditions',html)
+        self.assertIn('1 · Find requested job titles',html)
+        self.assertIn('Layer 2 · qualify candidates',html)
+        self.assertIn('every selected condition',html)
         self.assertIn('title_first:true',html)
         self.assertIn('Qualified results',html)
         self.assertIn('Qualified opportunities',html)
