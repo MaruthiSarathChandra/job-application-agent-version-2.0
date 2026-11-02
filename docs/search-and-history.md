@@ -42,3 +42,54 @@ Technical source counts and prior scans are collapsed under diagnostics. Saved j
 `application_history.prepared` and `.submitted` are local integration functions, exposed through same-origin HTTP endpoints. There are no browser/account/submission adapters in this release. A future worker must verify the real external action before calling them.
 
 Submission requires the current exact artifact ID, readable checksum-valid file, confirmation flag, receipt/reference, timezone-aware past/current timestamp and HTTPS confirmation URL. It requires the preceding prepared state. One transaction archives the entire bundle plus receipt, changes the application status, acknowledges the prepared event and inserts a unique submitted event. Failure rolls back all history/status/event changes. Duplicate identical receipts are no-ops; conflicting receipts fail. No “mark applied” shortcut exists in the UI.
+
+
+## Title-first discovery (updated pipeline)
+
+The dashboard now sends `title_first: true`, and stores that choice with
+the scheduled search. The same existing Layer 2 match/eligibility rules are
+still applied before *any new resume GPT request*:
+
+```text
+User requested titles (OR)
+  → Layer 1: public employer GET / title candidate screen
+    → Match section (title-matched candidates, regardless of eligibility)
+      → Layer 2: AND of selected filters
+        → matched: resume.requested.v1 → Agent 2
+        → excluded: remains visible with reasons, never queues a new resume
+        → needs_full_jd/date_unknown: hold until enough information exists
+```
+
+Provider honesty matters:
+
+- **SmartRecruiters public Posting API:** actual `GET /postings?q=<job title>`;
+  one title per company/scan slice, independently paginated in 55-row chunks.
+  The response gets a second local title check because its q parameter can
+  match other text such as location.
+- **Adzuna:** actual market search `what=<job title>` plus local title check;
+  supports 50 records per provider page and only returns JD excerpts.
+- **Greenhouse / Ashby:** public list GET has no general role-title query;
+  fetch the board index once, locally select relevant titles, then process
+  title candidates in up-to-55 slices. There is no claim of provider-side
+  keyword search.
+- **Lever:** public Postings API supports pagination but not generic full-text
+  title search; each 55-row GET is title-screened locally. Its cursor advances
+  by the *raw fetched page count*, never by the number of candidates.
+- **Indeed / LinkedIn:** not connected, never silently substituted with an
+  unrelated provider.
+
+The title stage deliberately does **not** apply years, years' experience,
+sponsorship, region, skill overlap or JD keyword heuristics. Those live in
+the separate second filtering layer. Role alternatives are OR; the selected
+Layer 2 filters are AND. Generated resumes never pass through title
+screening alone.
+
+The new web form defaults to excluding Senior/Sr/Staff/Principal/Lead/
+Manager/Director/Architect titles. The user can explicitly edit exclusions.
+A fresh v4 browser form is used to avoid old empty seniority exclusions
+being silently restored, while the previous saved title prompt is retained.
+
+Old job records, DOCX files and Agent 3 queue plans remain untouched;
+new exclusions apply only to future scans and current eligibility
+checks at handoff. Existing queued/generated applications should be
+reviewed separately instead of being automatically deleted.

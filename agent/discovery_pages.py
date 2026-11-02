@@ -74,9 +74,33 @@ def fetch_slice(owner,source,rules,reader=read_json):
     if provider=='lever':
         jobs=fetch_board(source,reader,page_size=size,offset=offset)
         next_offset=offset+len(jobs) if len(jobs)==size else 0
+        # Lever's public Postings API has no arbitrary full-text job-title
+        # search parameter; screen these 55 titles locally before stage 2.
+        # Cursor still advances over provider raw pages without dropping jobs.
+        if rules.get('title_first'):
+            from .title_search import requested_title
+            jobs=[item for item in jobs if 'source_error' in item or
+                  requested_title(item.get('title'),rules['title_keywords'])]
     elif provider=='smartrecruiters':
-        jobs,count=fetch_smartrecruiters(source,rules,reader,page_size=size,start_offset=offset)
-        next_offset=offset+count if count==size else 0
+        if rules.get('title_first'):
+            # q=title is supported by this employer's public Posting API.
+            # Rotate alternative role titles; each keeps an independent page
+            # cursor, so we do not scan every role at the company.
+            titles=rules['title_keywords'][:10]
+            state=cache if isinstance(cache,dict) and cache.get('mode')=='title_queries_v1' else {}
+            title_offsets=state.get('offsets')
+            if not isinstance(title_offsets,list) or len(title_offsets)!=len(titles):
+                title_offsets=[0]*len(titles)
+            index=offset%len(titles)
+            jobs,count=fetch_smartrecruiters(
+                source,rules,reader,page_size=size,
+                start_offset=title_offsets[index],title_query=titles[index])
+            title_offsets[index]=title_offsets[index]+count if count==size else 0
+            cache={'mode':'title_queries_v1','offsets':title_offsets}
+            next_offset=(index+1)%len(titles)
+        else:
+            jobs,count=fetch_smartrecruiters(source,rules,reader,page_size=size,start_offset=offset)
+            next_offset=offset+count if count==size else 0
     elif provider=='adzuna':
         titles=rules['title_keywords'][:5]
         title_index=offset%len(titles)
@@ -84,20 +108,33 @@ def fetch_slice(owner,source,rules,reader=read_json):
         jobs=fetch_source(source,rules,reader,market_page=page,market_title=titles[title_index])
         # Adzuna supports 50 per request; do not promise 55 or lose the final page.
         next_offset=offset+1 if page<3 or title_index<len(titles)-1 else 0
+        # Adzuna what=title is a real server query, but may return semantic
+        # near matches. Enforce job-title scope before further filtering.
+        if rules.get('title_first'):
+            from .title_search import requested_title
+            jobs=[item for item in jobs if 'source_error' in item or
+                  requested_title(item.get('title'),rules['title_keywords'])]
     else:
         # Greenhouse/Ashby list APIs return full boards. Cache one response, then
         # consume at most 55 raw postings per company per scan, without fake pagination.
         if cache is None or offset==0 or time.time()-fetched_at>86400:
             cache=fetch_board(source,reader)
             offset=0;fetched_at=time.time()
+            if rules.get('title_first'):
+                from .title_search import requested_title
+                # Greenhouse and Ashby public boards lack a title-query GET.
+                # Filter the fetched listing once and page only relevant
+                # title candidates; never claim provider-side keyword search.
+                cache=[item for item in cache if 'source_error' in item or
+                       requested_title(item.get('title'),rules['title_keywords'])]
         jobs=cache[offset:offset+size]
         next_offset=offset+len(jobs) if offset+len(jobs)<len(cache) else 0
     if provider=='greenhouse' and rules.get('posted_within_hours') and rules.get('time_basis','published')=='published':
         company=source.split(':')[1]
         for job in jobs:
             if job.get('source_error') or job.get('source_posted_at'):continue
-            wanted=rules.get('title_keywords',[])
-            if wanted and not any(x.casefold() in job.get('title','').casefold() for x in wanted):continue
+            from .title_search import requested_title
+            if not requested_title(job.get('title'),rules.get('title_keywords',[])):continue
             identifier=job.get('requisition_id','')
             if not str(identifier).isdigit():continue
             try:

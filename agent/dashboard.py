@@ -93,6 +93,12 @@ def rules_from_request(body):
     threshold=body.get('min_match_percent',0)
     if type(threshold) is not int or threshold not in (0,70,75,80,85,90,95,100):
         raise ValueError('Choose a match threshold from 70 to 100, or no filter')
+    # Existing API callers keep their original scan contract; the dashboard
+    # opts into title-first discovery and the same existing match layer.
+    title_first=body.get('title_first',False)
+    if type(title_first) is not bool:
+        raise ValueError('title_first must be true or false')
+    rules['title_first']=title_first
     size=body.get('batch_size')
     if size is not None and size!=55:
         raise ValueError('Discovery batches contain up to 55 postings per company')
@@ -238,6 +244,7 @@ class Service:
                    ('excluded_title_keywords','locations','jd_keywords','country_codes')},
                 'posted_within_hours':rules.get('posted_within_hours',0),'time_basis':rules.get('time_basis','published'),
                 'max_required_years':rules.get('max_required_years'),'min_match_percent':rules.get('min_match_percent',0),
+                'title_first':rules.get('title_first',False),
                 **({'batch_size':55} if rules.get('batch_size') else {})}
 
     def scheduled_scan(self, background=True):
@@ -322,7 +329,10 @@ class Service:
             from .discovery_pages import round_robin_sources
             work_sources = round_robin_sources(list(dict.fromkeys(work_sources)))
             self.event(run_id,'scan_started',f'Scanning {len(work_sources)} verified sources in sequence.')
-            wanted = tuple(term.casefold() for term in rules.get('title_keywords', []))
+            from .title_search import title_candidate
+            self.event(run_id,'architecture',
+                'Layer 1 searches requested role titles; Layer 2 evaluates JD, '
+                'location, experience, skills and publication time before any resume is queued.')
             for ordinal,source in enumerate(work_sources,1):
                 counts = {key:0 for key in (*counters,'errors')}
                 result_status = 'completed'
@@ -353,12 +363,15 @@ class Service:
                             title = job.get('title')
                             if not isinstance(title,str) or not title.strip():
                                 raise ValueError('Missing title')
-                            # Do not write thousands of irrelevant careers to SQLite.
-                            # The original fetched figure stays honest: raw API records.
-                            if wanted and not any(term in title.casefold() for term in wanted):
+                            # Layer 1 is only the user-requested role titles.
+                            # These candidates enter the existing Layer 2 matcher
+                            # before any resume_queue/outbox side effects occur.
+                            candidate=title_candidate(job,rules)
+                            if candidate is None:
                                 counts['title_filtered'] += 1
                                 continue
-                            result = store.import_job({**job,'source':job.get('source') or source,'qualification_rules':rules,
+                            result = store.import_job({**candidate,'source':candidate.get('source') or source,
+                                                       'qualification_rules':rules,
                                                        'intake_run_id':run_id},rules)
                             counts['new_jobs' if result['is_new'] else 'existing_jobs'] += 1
                             decision = result['qualification']['status']
@@ -433,9 +446,10 @@ class Service:
                         totals[key] += counts[key]
             status = 'completed_with_errors' if failures else 'completed'
             self.event(run_id,'finished',
-                f"Scan finished: {totals['fetched']} returned (raw API postings), "
+                f"Scan finished: {totals['fetched']} returned "
+                f"({'title candidates inspected' if rules.get('title_first') else 'raw API postings'}), "
                 f"{totals['title_filtered']} unrelated titles skipped, "
-                f"{totals['new_jobs']} new matching-title jobs, "
+                f"{totals['new_jobs']} new requested-title candidates (Layer 1), "
                 f"{totals['existing_jobs']} previously seen matching-title jobs, "
                 f"{totals['matched']} qualified, {totals['date_unknown']} unverified dates, "
                 f"{totals['queued']} newly queued; {failures} errors.")

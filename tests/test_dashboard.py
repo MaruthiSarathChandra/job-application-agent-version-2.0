@@ -143,7 +143,12 @@ class DashboardTests(unittest.TestCase):
         html = Path(__file__).resolve().parent.parent.joinpath('agent/web/index.html').read_text(encoding='utf-8')
         for identifier in ('board-provider','region','posted-window','required-years','match-threshold','prompt','appliedtab'):
             self.assertIn('id="'+identifier+'"',html)
-        self.assertIn('every selected filter below must pass (AND)',html)
+        self.assertIn('Layer 1 · find jobs by the job titles you enter',html)
+        self.assertIn('Layer 2 · match those title candidates before resume generation',html)
+        self.assertIn('selected criteria below are AND conditions',html)
+        self.assertIn('title_first:true',html)
+        self.assertIn('Match section · current scan',html)
+        self.assertIn('Saved history · all scans',html)
         self.assertIn("option.disabled=!board.available",html)
         self.assertIn("batch_size:55",html)
         self.assertIn('Agent 4 confirmed submissions',html)

@@ -117,7 +117,7 @@ def fetch_board(source, reader=read_json, page_size=None, offset=0):
     return jobs
 
 
-def fetch_smartrecruiters(source, rules, reader=read_json, page_size=None, start_offset=0):
+def fetch_smartrecruiters(source, rules, reader=read_json, page_size=None, start_offset=0, title_query=None):
     """Read publicly published postings + full details via official Posting API."""
     validate_sources([source])
     provider, board = source.split(':', 1)
@@ -128,7 +128,11 @@ def fetch_smartrecruiters(source, rules, reader=read_json, page_size=None, start
     offset = start_offset
     # Bounded traversal, public listings ONLY. No third-party career URL fetch.
     while True:
-        payload = reader(f'{base}?limit={page_size or 100}&offset={offset}&destination=PUBLIC')
+        # Public SmartRecruiters Posting API supports server-side q=job-title.
+        # Exact title matching is STILL checked locally: q may search location too.
+        query = (f'&q={urlencode({"q":title_query})[2:]}'
+                 if isinstance(title_query,str) and title_query.strip() else '')
+        payload = reader(f'{base}?limit={page_size or 100}&offset={offset}&destination=PUBLIC{query}')
         page = payload.get('content') if isinstance(payload, dict) else None
         if not isinstance(page, list) or len(page) > (page_size or 100):
             raise ValueError('SmartRecruiters returned an invalid postings page')
@@ -139,9 +143,10 @@ def fetch_smartrecruiters(source, rules, reader=read_json, page_size=None, start
         if page_size is not None or len(page) < 100:
             break
     wanted = rules.get('title_keywords', [])
+    from .title_search import requested_title
     selected = [row for row in rows
                 if isinstance(row, dict) and isinstance(row.get('name'), str)
-                and (not wanted or any(term.casefold() in row['name'].casefold() for term in wanted))]
+                and (not wanted or requested_title(row['name'], wanted))]
     if len(selected) > 200:
         raise ValueError('SmartRecruiters matched over 200 postings; narrow the job titles')
     # Preserve title-skipped listing rows in sliced mode so search counters reflect
@@ -174,6 +179,7 @@ def fetch_smartrecruiters(source, rules, reader=read_json, page_size=None, start
                          'description':content or 'Full JD unavailable',
                          'description_completeness':'full' if content.strip() else 'excerpt',
                          'description_provenance':'official_smartrecruiters_public_api',
+                         **({'source_title_query':title_query} if title_query else {}),
                          **({'source_posted_at':detail['releasedDate']}
                             if isinstance(detail.get('releasedDate'),str) else {})})
         except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
@@ -211,9 +217,27 @@ def fetch_source(source, rules, reader=read_json, market_page=None, market_title
                 jobs.append({'source':board, 'source_error':f'Public board unavailable ({type(exc).__name__})'})
         return jobs
     if source.startswith('smartrecruiters:'):
+        # Direct (non-sliced) calls also search by the actual requested role
+        # rather than retrieving all functions from a company's career board.
+        # A keyword result is a candidate, never an automatic qualification.
+        if rules.get('title_first') and rules.get('title_keywords'):
+            seen = set()
+            result = []
+            for phrase in rules['title_keywords']:
+                for job in fetch_smartrecruiters(source,rules,reader,title_query=phrase):
+                    key = job.get('requisition_id') or job.get('url') or repr(job)
+                    if key not in seen:
+                        seen.add(key)
+                        result.append(job)
+            return result
         return fetch_smartrecruiters(source, rules, reader)
     if not source.startswith('adzuna:'):
-        return fetch_board(source, reader)
+        rows=fetch_board(source,reader)
+        if rules.get('title_first'):
+            from .title_search import requested_title
+            rows=[row for row in rows if 'source_error' in row or
+                  requested_title(row.get('title'),rules['title_keywords'])]
+        return rows
     app_id, app_key = os.getenv('ADZUNA_APP_ID'), os.getenv('ADZUNA_APP_KEY')
     if not app_id or not app_key:
         raise ValueError('Adzuna market search needs ADZUNA_APP_ID and ADZUNA_APP_KEY on the server')
@@ -241,6 +265,7 @@ def fetch_source(source, rules, reader=read_json, market_page=None, market_title
                     description=plain(row.get('description')) or 'Full JD unavailable',
                     requisition_id=identifier, employer_key=source, source=source,
                     description_completeness='excerpt',
+                    source_title_query=title,
                     # Adzuna created is when the aggregator listed it; that
                     # does not prove the employer's publication instant.
                     **({'source_listed_at':row['created']}
