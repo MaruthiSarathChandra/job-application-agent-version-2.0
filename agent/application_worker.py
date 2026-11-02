@@ -35,6 +35,7 @@ class Agent3:
     def __init__(self, database):
         self.database = str(database)
         # Create only missing local tables, never reset historical jobs/resumes.
+        # Never construct Service here: its startup recovery would interrupt a live Agent 1 scan.
         Path(self.database).parent.mkdir(parents=True, exist_ok=True)
         from .intake import IntakeStore
         from .dashboard import SCHEMA as DASHBOARD_SCHEMA
@@ -83,13 +84,26 @@ class Agent3:
                     WHERE application_order=? AND ready_event_id<>?
                       AND status IN ('queued','checking','error','blocked','awaiting_browser_adapter')""",
                     (event_id,row['sequence'],event_id))
+            db.execute("""UPDATE agent3_tasks SET status='prepared',
+                last_error=NULL,worker_token=NULL,lease_until=NULL,
+                updated_at=CURRENT_TIMESTAMP
+                WHERE EXISTS(SELECT 1 FROM application_queue a
+                             WHERE a.sequence=application_order
+                               AND a.status='ready_for_submission')
+                  AND status<>'prepared'""")
+            db.execute("""UPDATE agent3_tasks SET status='submitted',
+                last_error=NULL,worker_token=NULL,lease_until=NULL,
+                updated_at=CURRENT_TIMESTAMP
+                WHERE EXISTS(SELECT 1 FROM application_queue a
+                             WHERE a.sequence=application_order AND a.status='submitted')
+                  AND status<>'submitted'""")
             db.execute("""UPDATE agent3_tasks SET status='blocked',
                 last_error='Resume handoff is no longer application-ready',
                 worker_token=NULL,lease_until=NULL,updated_at=CURRENT_TIMESTAMP
                 WHERE status IN ('queued','checking','error','awaiting_browser_adapter')
                   AND EXISTS(SELECT 1 FROM application_queue a
                              WHERE a.sequence=application_order
-                               AND a.status<>'ready_for_application')""")
+                               AND a.status NOT IN ('ready_for_application','ready_for_submission','submitted'))""")
 
     def status(self):
         self.sync()
