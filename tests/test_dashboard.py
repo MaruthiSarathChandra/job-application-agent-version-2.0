@@ -109,7 +109,7 @@ class DashboardTests(unittest.TestCase):
                 self.assertEqual(response.status,200)
                 self.assertIn('charset=utf-8', response.getheader('Content-Type'))
                 html = response.read().decode('utf-8')
-                self.assertIn('Opportunity pipeline', html)
+                self.assertIn('Qualified opportunities', html)
                 self.assertIn('→', html)
             conn.request('POST','/api/runs', json.dumps(self.body), {'Origin':'https://evil.example'})
             response = conn.getresponse()
@@ -143,15 +143,19 @@ class DashboardTests(unittest.TestCase):
         html = Path(__file__).resolve().parent.parent.joinpath('agent/web/index.html').read_text(encoding='utf-8')
         for identifier in ('board-provider','region','posted-window','required-years','match-threshold','prompt','appliedtab'):
             self.assertIn('id="'+identifier+'"',html)
-        self.assertIn('Layer 1 · find jobs by the job titles you enter',html)
-        self.assertIn('Layer 2 · match those title candidates before resume generation',html)
-        self.assertIn('selected criteria below are AND conditions',html)
+        self.assertIn('1 · Find requested job titles',html)
+        self.assertIn('Layer 2 · qualify candidates',html)
+        self.assertIn('every selected condition',html)
         self.assertIn('title_first:true',html)
-        self.assertIn('Match section · current scan',html)
+        self.assertIn('Qualified results',html)
+        self.assertIn('Qualified opportunities',html)
+        self.assertIn('id="match-summary"',html)
         self.assertIn('Saved history · all scans',html)
+        self.assertNotIn('id="exclude"',html)
+        self.assertIn('id="matched"',html)
         self.assertIn("option.disabled=!board.available",html)
         self.assertIn("batch_size:55",html)
-        self.assertIn('Agent 4 confirmed submissions',html)
+        self.assertIn('Applications require confirmed employer submission',html)
 
     def test_lever_paginates(self):
         calls = []

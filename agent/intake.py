@@ -72,7 +72,11 @@ def qualify(job, requirements):
         reasons.append('Job board/company is outside selected sources')
     title = job['title'].casefold()
     wanted = requirements.get('title_keywords', [])
-    if wanted and not any(word.casefold() in title for word in wanted):
+    if requirements.get('title_first') and wanted:
+        from .title_search import requested_title
+        if requested_title(job['title'],wanted) is None:
+            reasons.append('Title or seniority is outside the requested roles')
+    elif wanted and not any(word.casefold() in title for word in wanted):
         reasons.append('Title does not match configured roles')
     if any(re.search(r'\b' + re.escape(word.casefold()) + r'\b', title)
            for word in requirements.get('excluded_title_keywords', [])):

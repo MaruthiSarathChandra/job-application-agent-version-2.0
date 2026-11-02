@@ -28,6 +28,45 @@ A pending slice is saved before ingestion. If interrupted, the same slice is rep
 
 Provider documentation: [Lever pagination](https://github.com/lever/postings-api), [Greenhouse list/detail APIs](https://docs.greenhouse.io/job-board.html), [Ashby job postings](https://developers.ashbyhq.com/docs/public-job-posting-api). There is no implemented LinkedIn, Indeed or Workday discovery adapter. A disabled option is not a hidden working integration.
 
+## Qualified-only home view (current behavior)
+
+The discovery home page intentionally shows **only confirmed matches for the
+latest scan**, with the recognized technical-skill overlap score in the match
+column and the employer publication date in its own column.
+
+- The four main counters describe the **current scan only**: candidate rows
+  checked, unique title candidates stored, qualified matches, and new resume
+  requests queued. They do **not** sum unrelated historical jobs or failed
+  resume attempts.
+- Full employer postings that fail the selected country, publication window,
+  required-years or profile-skill conditions are not returned in
+  `qualified_jobs`. They remain available in persisted history and
+  collapsed scan diagnostics for investigation.
+- The endpoint's `qualified_jobs_count` reports all exact matches for
+  the latest run; `qualified_jobs` is a bounded list of the top 250,
+  ordered by descending recognized technical-skill overlap.
+- A broad title phrase such as `Software Engineer` **does not** include
+  `Senior`, `Sr`, `Staff`, `Principal`, `Lead`, `Director`,
+  `Manager` or `Architect` variants. The user can request an explicit
+  senior-level title by typing that complete title in the search prompt.
+  No user-maintained exclusion control is needed.
+- Saved search settings migrate from the previous browser form, **ignoring
+  obsolete manual excluded-title lists**, preserving chosen 7/24/72-hour,
+  experience and overlap filters. Changes become effective when the user
+  submits a fresh search, and scheduled scans replay the latest submitted
+  request.
+- Historical resumes, failed GPT attempts and existing Agent 3 preflight
+  records are not deleted or reported as applied. The Agent 2 worker's
+  existing pre-GPT requalification check uses the newly required role/level
+  match before making a paid generation call. Unclaimable exhausted older
+  tasks may remain in audit data.
+
+A displayed 85% score means the percentage of *recognized JD technical
+skills* found in verified profile facts, **not an application acceptance
+probability or proof of overall eligibility**. Requirements whose evidence
+is missing do not pass a selected strict filter. The initial employer-site
+submission problem is a separate future milestone.
+
 ## Counts and views
 
 - Jobs searched: postings examined across recorded scans, including repeated sightings.

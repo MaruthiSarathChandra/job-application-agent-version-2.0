@@ -7,25 +7,39 @@ No profile, seniority, years, location or JD filters run at this stage.
 import re
 
 
-def requested_title(job_title, phrases):
-    """Return the matching user-supplied title, or None.
+_SENIORITY = frozenset(('senior','sr','staff','principal','lead','manager',
+                         'director','head','architect','chief','vp','vice'))
 
-    Treat punctuation between words as spaces (e.g. 'Backend-Software Engineer')
-    and require word boundaries. Do not accept a substring inside a longer
-    unrelated word such as 'Engineer' inside 'Bioengineering'.
+
+def _words(value):
+    return [word.rstrip('.') for word in re.findall(r'[a-z0-9+#.]+', value.casefold())]
+
+
+def requested_title(job_title, phrases):
+    """Match requested role titles without silently expanding junior roles.
+
+    A broad title such as 'Software Engineer' does not include Senior, Staff,
+    Principal or Lead variants. The user may request one of those explicitly.
+    This is a title-level safety constraint, not a résumé/profile decision.
     """
     if not isinstance(job_title, str):
         return None
-    title_words = re.findall(r'[a-z0-9+#.]+', job_title.casefold())
+    words = _words(job_title)
+    seniority = _SENIORITY.intersection(words)
     for phrase in phrases:
         if not isinstance(phrase, str) or not phrase.strip():
             continue
-        wanted = re.findall(r'[a-z0-9+#.]+', phrase.casefold())
-        if wanted and any(title_words[i:i+len(wanted)] == wanted
-                          for i in range(len(title_words)-len(wanted)+1)):
+        wanted = _words(phrase)
+        if not wanted:
+            continue
+        if seniority and not seniority.intersection(wanted):
+            # Never burn model credits on senior/staff roles merely because
+            # they contain a generic 'Software Engineer' phrase.
+            continue
+        if any(words[i:i+len(wanted)] == wanted
+               for i in range(len(words)-len(wanted)+1)):
             return phrase
     return None
-
 
 def title_candidate(posting, rules):
     """Convert only title-matching API results into layer-2 input."""

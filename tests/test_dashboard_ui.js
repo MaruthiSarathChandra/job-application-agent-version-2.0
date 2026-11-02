@@ -12,15 +12,27 @@ class Element {
 }
 const nodes=new Map([...html.matchAll(/id="([^"]+)"/g)].map(m=>[m[1],new Element()]));
 for(const [id,value] of Object.entries({'region':'US','posted-window':'24','match-threshold':'70','board-provider':'all','scan-interval':'15','prompt':'Engineer'}))nodes.get(id).value=value;
-const job={job_id:'job1',id:'job1',title:'Engineer',company:'Example',source:'lever:example',location:'US',url:'https://example.com/job',description:'Build Java APIs',qualification:{status:'matched',reasons:[]}};
+const job={job_id:'job1',id:'job1',title:'Engineer',company:'Example',source:'lever:example',location:'US',url:'https://example.com/job',description:'Build Java APIs',qualification:{status:'matched',reasons:[]},match_evidence:{score:90,matched:['Java'],missing:[]}};
+const old={...job,job_id:'old1',id:'old1',title:'Senior Engineer',qualification:{status:'excluded',reasons:['Too senior']},match_evidence:{score:100,matched:['Java'],missing:[]}};
 const payload={job,job_url:job.url,resume:{artifact_id:'artifact1'},submission:{id:'receipt1',submitted_at:'2026-11-02T00:00:00Z',confirmation_url:'https://example.com/confirmation'}};
-let state={build_version:'fixture',jobs:[job],latest_jobs:[job],queue:[{sequence:1,job_id:'job1',status:'resume_ready',snapshot:JSON.stringify(job)}],runs:[],activity:[],sources:[],drafts:[],applications:[{sequence:1,job_id:'job1',resume_artifact_id:'artifact1',status:'ready_for_application',payload:JSON.stringify(payload)}],applied_history:[],source_scans:[],scanner:{enabled:true,interval_minutes:15},worker:{online:false},searched_count:55,board_options:[{id:'lever',name:'Lever',available:true},{id:'linkedin',name:'LinkedIn',available:false,reason:'Not implemented'}]};
+let state={build_version:'fixture',jobs:[job,old],latest_jobs:[job,old],qualified_jobs:[job],qualified_jobs_count:1,latest_jobs_count:2,latest_scan_counts:{processed:3,queued:1},queue:[{sequence:1,job_id:'job1',status:'resume_ready',last_error:'OpenAI network request failed',snapshot:JSON.stringify(job)}],runs:[],activity:[],sources:[],drafts:[],applications:[{sequence:1,job_id:'job1',resume_artifact_id:'artifact1',status:'ready_for_application',payload:JSON.stringify(payload)}],applied_history:[],source_scans:[],scanner:{enabled:true,interval_minutes:15},worker:{online:false},searched_count:55,board_options:[{id:'lever',name:'Lever',available:true},{id:'linkedin',name:'LinkedIn',available:false,reason:'Not implemented'}]};
 let requests=[];
 const context={document:{getElementById:id=>{assert(nodes.has(id),'Missing DOM element: '+id);return nodes.get(id)},createElement:tag=>new Element(tag)},localStorage:{getItem:()=>null,setItem(){}},window:{},URL,console,setInterval(){},fetch:async(url,options)=>{requests.push({url,options});return {ok:true,json:async()=>url==='/api/state'?state:{promoted:1}}}};
 vm.createContext(context);vm.runInContext(html.split('<script>')[1].split('</script>')[0],context);
 (async()=>{
  await vm.runInContext('refresh()',context);
  assert.equal(nodes.get('connection').textContent,'Connected');
+ assert.equal(nodes.get('rows').children.length,1,'Only latest qualified jobs appear in results');
+ assert.equal(nodes.get('rows').children[0].children[2].children[0].textContent,'90% skill match');
+ assert.equal(nodes.get('total').textContent,2,'Title candidates count is latest scan, not saved history');
+ assert.equal(nodes.get('matched').textContent,1);
+ assert.equal(nodes.get('waiting').textContent,1,'Historical pending errors must not pollute current KPI');
+ assert(!html.includes('id="exclude"'),'No manually maintained exclusion field');
+ const recentText=(node)=>[node.textContent,...node.children.flatMap(recentText)].join(' ');
+ assert(!recentText(nodes.get('rows')).includes('OpenAI network request failed'),
+        'Historical resume errors do not leak into qualified search results');
+ assert(!recentText(nodes.get('rows')).includes('Senior Engineer'),
+        'Old excluded roles are not displayed as matches');
  assert(nodes.get('board-provider').children.find(x=>x.value==='linkedin').disabled);
  nodes.get('queuetab').onclick();assert.equal(nodes.get('rows').children.length,0,'Completed resume must leave active queue');
  state.drafts=[{queue_order:1,result:JSON.stringify({sections:[],missing_requirements:[],note:'Completed draft'})}];
@@ -43,5 +55,7 @@ vm.createContext(context);vm.runInContext(html.split('<script>')[1].split('</scr
  assert.equal(sent.board_provider,'lever');assert.equal(sent.max_required_years,2);
  assert.equal(sent.min_match_percent,70);assert.equal(sent.batch_size,55);
  assert.deepEqual(sent.country_codes,['US']);assert.equal(sent.time_basis,'published');
+ assert.deepEqual(sent.excluded_title_keywords,[]);
+ assert.equal(sent.title_first,true);
  console.log('Dashboard JS interaction checks passed');
 })().catch(error=>{console.error(error);process.exitCode=1});
