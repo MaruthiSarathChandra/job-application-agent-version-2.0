@@ -143,9 +143,10 @@ def fetch_smartrecruiters(source, rules, reader=read_json, page_size=None, start
         if page_size is not None or len(page) < 100:
             break
     wanted = rules.get('title_keywords', [])
+    from .title_search import requested_title
     selected = [row for row in rows
                 if isinstance(row, dict) and isinstance(row.get('name'), str)
-                and (not wanted or any(term.casefold() in row['name'].casefold() for term in wanted))]
+                and (not wanted or requested_title(row['name'], wanted))]
     if len(selected) > 200:
         raise ValueError('SmartRecruiters matched over 200 postings; narrow the job titles')
     # Preserve title-skipped listing rows in sliced mode so search counters reflect
@@ -231,7 +232,12 @@ def fetch_source(source, rules, reader=read_json, market_page=None, market_title
             return result
         return fetch_smartrecruiters(source, rules, reader)
     if not source.startswith('adzuna:'):
-        return fetch_board(source, reader)
+        rows=fetch_board(source,reader)
+        if rules.get('title_first'):
+            from .title_search import requested_title
+            rows=[row for row in rows if 'source_error' in row or
+                  requested_title(row.get('title'),rules['title_keywords'])]
+        return rows
     app_id, app_key = os.getenv('ADZUNA_APP_ID'), os.getenv('ADZUNA_APP_KEY')
     if not app_id or not app_key:
         raise ValueError('Adzuna market search needs ADZUNA_APP_ID and ADZUNA_APP_KEY on the server')
@@ -259,6 +265,7 @@ def fetch_source(source, rules, reader=read_json, market_page=None, market_title
                     description=plain(row.get('description')) or 'Full JD unavailable',
                     requisition_id=identifier, employer_key=source, source=source,
                     description_completeness='excerpt',
+                    source_title_query=title,
                     # Adzuna created is when the aggregator listed it; that
                     # does not prove the employer's publication instant.
                     **({'source_listed_at':row['created']}
