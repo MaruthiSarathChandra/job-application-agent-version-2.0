@@ -191,7 +191,7 @@ class TwoLayerIntegrationTests(unittest.TestCase):
         rules={'title_first':True,'title_keywords':['Software Engineer'],
                'country_codes':['US'],'posted_within_hours':7,
                'max_required_years':1,'min_match_percent':85,
-               'profile_skills':['Java','Spring Boot']}
+               'profile_skills':['Java','Spring Boot','Spring']}
         job={'title':'Software Engineer','location':'United States',
              'description':'At least 1 year of software development experience using Java and Spring Boot.',
              'source_posted_at':now.isoformat()}
