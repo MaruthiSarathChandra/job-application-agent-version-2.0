@@ -155,7 +155,7 @@ class DashboardTests(unittest.TestCase):
         self.assertIn('id="matched"',html)
         self.assertIn("option.disabled=!board.available",html)
         self.assertIn("batch_size:55",html)
-        self.assertIn('Agent 4 confirmed submissions',html)
+        self.assertIn('Applications require confirmed employer submission',html)
 
     def test_lever_paginates(self):
         calls = []
