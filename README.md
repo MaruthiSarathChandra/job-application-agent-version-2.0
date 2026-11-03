@@ -94,6 +94,10 @@ Tests cover source parsing/pagination, title/country/date filters, repeated scan
 
 See [architecture](docs/architecture.md) for queue contracts and failure behavior.
 
+## V3: authorized submission execution boundary (in progress)
+
+The new [Agent 3 execution boundary](docs/v3-agent3-execution.md) reserves each submission attempt before any external request, prevents automatic retries after ambiguous outcomes, and records Applied History only after an employer-confirmed receipt. It supports pluggable authorized API/browser adapters, **but no real employer submission adapter is implemented in this branch**. Current application preflight and guided browser prefill are not application submissions. Unit tests use fake adapters; live integration is the next sprint.
+
 ## Agent 3 and Agent 4 status
 
 This repository has queue contracts, not working account-creation or submission adapters. After actual preparation, Agent 3 can POST `/api/applications/prepared` with `job_id`, `artifact_id`, and `prepared: true`. After actual confirmed submission, Agent 4 can POST `/api/applications/submitted` with the same IDs, `submitted: true`, `confirmed: true`, `submission_id`, timezone-aware `submitted_at`, and an HTTPS `confirmation_url`. These endpoints record trusted local worker reports; they do not submit or independently confirm with employers. Do not call them to simulate real applications.

@@ -40,10 +40,11 @@ class Agent3:
         from .intake import IntakeStore
         from .dashboard import SCHEMA as DASHBOARD_SCHEMA
         from .resume_artifact import SCHEMA as ARTIFACT_SCHEMA
+        from .application_execution import SCHEMA as EXECUTION_SCHEMA
         store=IntakeStore(self.database)
         store.close()
         with self.connect() as db:
-            db.executescript(DASHBOARD_SCHEMA + ARTIFACT_SCHEMA + SCHEMA)
+            db.executescript(DASHBOARD_SCHEMA + ARTIFACT_SCHEMA + SCHEMA + EXECUTION_SCHEMA)
         self.sync()
 
     @contextmanager
@@ -109,9 +110,12 @@ class Agent3:
         self.sync()
         with self.connect() as db:
             return [dict(row) for row in db.execute("""SELECT t.application_order,t.status,
-                t.attempts,t.last_error,t.plan,a.job_id,a.resume_artifact_id
+                t.attempts,t.last_error,t.plan,a.job_id,a.resume_artifact_id,
+                s.status AS submission_attempt_status,s.method AS submission_method
                 FROM agent3_tasks t JOIN application_queue a
-                ON a.sequence=t.application_order ORDER BY t.application_order""")]
+                ON a.sequence=t.application_order
+                LEFT JOIN application_attempts s ON s.application_order=t.application_order
+                ORDER BY t.application_order""")]
 
     def claim(self):
         self.sync()
@@ -192,7 +196,7 @@ class Agent3:
                 'profile_version':event['profile_version'],
                 'handoff_mode':'approved' if explicit else 'automatic_unreviewed',
                 'submission_performed':False,'prepared':False,
-                'next_step':'employer_browser_interaction_required'}
+                'next_step':'authorized_api_if_available_otherwise_guided_browser'}
 
     def process_one(self):
         task=self.claim()
@@ -211,7 +215,7 @@ class Agent3:
                 db.execute("""INSERT INTO activity(run_id,kind,message)
                               VALUES(?,?,?)""",
                            (task['run_id'],'agent3_preflight',
-                            f"Application #{task['application_order']}: verified DOCX and JD; browser interaction required"))
+                            f"Application #{task['application_order']}: verified DOCX and JD; authorized submission adapter required"))
         except Exception as exc:
             msg=str(exc) if isinstance(exc,ValueError) else 'Preflight failed; check local task details'
             with self.connect() as db:
