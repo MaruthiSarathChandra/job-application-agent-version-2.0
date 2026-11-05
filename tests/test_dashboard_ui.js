@@ -52,6 +52,15 @@ vm.createContext(context);vm.runInContext(html.split('<script>')[1].split('</scr
  assert.equal(nodes.get('stage-agent3').textContent,1);
  assert.equal(nodes.get('rows').children.length,1);
  nodes.get('appliedtab').onclick();assert.equal(nodes.get('rows').children.length,0,'Generated resume is not applied');
+ state={...state,applications:[{...state.applications[0],status:'submission_unknown'}],pipeline_counts:{submission_unknown:1,confirmed_submissions:0}};
+ await vm.runInContext('refresh()',context);
+ nodes.get('submissiontab').onclick();
+ assert.equal(nodes.get('rows').children.length,1,'Uncertain attempts must remain visible');
+ assert.equal(nodes.get('rows').children[0].children[2].children[0].textContent,
+              'Uncertain — reconcile with employer');
+ assert(nodes.get('stage-explanation').textContent.includes('1 uncertain attempts'));
+ nodes.get('appliedtab').onclick();
+ assert.equal(nodes.get('rows').children.length,0,'Uncertain is NOT applied');
  state={...state,applications:[{...state.applications[0],status:'submitted'}],applied_history:[{job_id:'job1',artifact_id:'artifact1',payload:JSON.stringify(payload)}]};
  await vm.runInContext('refresh()',context);assert.equal(nodes.get('rows').children.length,1);
  nodes.get('board-provider').value='lever';nodes.get('required-years').value='2';
