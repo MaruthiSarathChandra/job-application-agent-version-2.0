@@ -5,6 +5,7 @@ submission. This command never phones an employer, reads Gmail, runs GPT,
 mutates SQLite, or prints credentials/PII.
 """
 import argparse
+from contextlib import closing
 import importlib.util
 import json
 import os
@@ -32,7 +33,9 @@ def _database_status(database):
         # Read-only mode prevents the readiness report from creating or
         # mutating a database. Work with paths containing spaces on Windows.
         uri = 'file:' + quote(str(path).replace('\\', '/'), safe='/:') + '?mode=ro'
-        with sqlite3.connect(uri, uri=True, timeout=3) as conn:
+        # sqlite3.Connection.__exit__ does NOT close the connection;
+        # explicitly closing is essential on Windows for cleanup/backups.
+        with closing(sqlite3.connect(uri, uri=True, timeout=3)) as conn:
             conn.execute('PRAGMA query_only=ON')
             if conn.execute('PRAGMA quick_check(1)').fetchone()[0] != 'ok':
                 return False, 'Database quick-check failed; restore from backup.'
