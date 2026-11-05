@@ -15,7 +15,7 @@ This PR implements the **durable execution boundary**, not a live ATS API connec
 
 ## Employer adapter contract
 
-An adapter exposes a method (api or browser), a nonempty name, supports(plan), and submit(plan, resume_path, verified_answers, attempt_key). It returns SubmissionOutcome with confirmed, rejected, or unknown. Only an employer-generated submission reference, valid timestamp and HTTPS confirmation URL can produce an applied-history entry.
+An adapter exposes a method (api or browser), a nonempty name, supports(plan), submit(plan, resume_path, verified_answers, attempt_key), **and** verify_confirmation(plan, outcome, attempt_key). It returns SubmissionOutcome with confirmed, rejected, or unknown. A claimed confirmed status is treated as **unknown** until an additional employer-side verification check returns exactly true for the receipt, posting and attempt identity. Only an independently verified employer-generated submission reference, valid timestamp and HTTPS confirmation URL can produce an applied-history entry. The verifier must use real provider evidence, not simply return true; fixture test adapters are not proof of a live integration.
 
 Calling application_execution.execute requires an exact preflighted queue position, verified answers and explicit permission for submission. The adapter is responsible for employer-specific requirements, legal answers, authentication and receipt validation. **No adapter is enabled by default.** In particular, never blindly POST JSON to a job URL; discovery APIs typically do not grant public application write access.
 
@@ -24,12 +24,12 @@ Calling application_execution.execute requires an exact preflighted queue positi
 | State | Meaning | Automatic retry |
 |---|---|---|
 | No attempt | Resume preflighted; waiting for supported adapter | N/A |
-| sending | Attempt reserved before external request | Never |
-| confirmed | Receipt validated and stored in applied history | Never |
-| rejected | Employer rejected the application | Never |
-| unknown | Timeout, crash, ambiguous response or invalid receipt | Never; reconcile first |
+| sending | Attempt reserved before external request; NOT yet prepared/submitted | Never |
+| confirmed | Independently verified receipt stored in Applied History | Never |
+| rejected | Employer rejected; visible as `submission_rejected` in the application queue | Never |
+| unknown | Timeout, crash, ambiguous response, missing verifier or invalid receipt; visible as `submission_unknown` | Never; reconcile first |
 
-An application queue position has at most one execution attempt in the initial slice. A timeout or lost response may still mean the employer received an application, so a retry requires checking the employer first.
+An application queue position has at most one execution attempt in the initial slice. The queue is not promoted to `ready_for_submission` merely because an attempt was reserved. Preparation and Applied History are recorded only after the adapter returns a confirmed result **and** its independent employer-side verification passes. Unknown/rejected attempts get separate persistent states, remain visible for investigation, and never receive automatic retries. A timeout or lost response may still mean the employer received the application, so any retry requires employer-side reconciliation first.
 
 Agent 3 status now exposes submission_attempt_status and submission_method. The existing Applied History remains the source of truth for confirmed application receipts.
 
@@ -43,4 +43,4 @@ Agent 3 status now exposes submission_attempt_status and submission_method. The 
 - [ ] Implement read-only reconciliation of unknown attempts; do not blindly retry
 - [ ] Test one real consented submission end-to-end; no fake applied records
 
-The current unit tests inject fake adapters and do not establish live API access or actual application submissions.
+The current unit tests inject fake adapters and simulate independent receipt checks; they do not establish live API access or actual application submissions. Dashboard HTTP POST routes that formerly allowed a caller to assert "prepared" or "submitted" have been disabled. Use only trusted internal code and an authorized ATS adapter for employer state changes.

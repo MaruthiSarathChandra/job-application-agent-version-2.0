@@ -52,12 +52,33 @@ def attempt_status(owner, application_order):
 
 def _finish(owner, order, state, error=None, receipt=None):
     with owner.connect() as db:
-        db.execute(
+        db.execute('BEGIN IMMEDIATE')
+        changed=db.execute(
             """UPDATE application_attempts
                SET status=?,last_error=?,employer_receipt=?,updated_at=CURRENT_TIMESTAMP
                WHERE application_order=? AND status='sending'""",
             (state, error, json.dumps(receipt) if receipt else None, order),
         )
+        if changed.rowcount!=1:
+            raise ValueError('Attempt state changed during completion; do not retry')
+        if state in ('unknown','rejected'):
+            # Never leave a timed-out or refused employer operation looking
+            # like an ordinary ready-to-submit task on the dashboard.
+            row=db.execute('SELECT status,payload FROM application_queue WHERE sequence=?',
+                           (order,)).fetchone()
+            if row and row['status'] in ('ready_for_application','ready_for_submission'):
+                payload=json.loads(row['payload'])
+                payload['status']='submission_'+state
+                payload['submission_attempt']={'status':state,
+                    'reconciliation_required':state=='unknown'}
+                db.execute(
+                    'UPDATE application_queue SET status=?,payload=? WHERE sequence=?',
+                    ('submission_'+state,json.dumps(payload),order))
+                db.execute(
+                    """UPDATE agent3_tasks SET status=?,last_error=?,
+                       updated_at=CURRENT_TIMESTAMP WHERE application_order=?""",
+                    ('submission_'+state,error,order))
+
 
 
 def execute(owner, application_order, adapter, answers, *, allow_submission=False):
@@ -67,6 +88,9 @@ def execute(owner, application_order, adapter, answers, *, allow_submission=Fals
     adapter.name: stable adapter identifier
     adapter.supports(plan): True only if this exact employer is supported
     adapter.submit(plan, resume_path, answers, attempt_key): SubmissionOutcome
+    adapter.verify_confirmation(plan, outcome, attempt_key): bool
+        Must independently validate that the employer registered this exact
+        application; never accept only an API 200 or browser success banner.
 
     There is intentionally no generic POST-to-job-URL fallback. The adapter
     owns auth, form discovery, required fields and employer response parsing.
@@ -122,16 +146,9 @@ def execute(owner, application_order, adapter, answers, *, allow_submission=Fals
         )
 
     from .application_history import prepared, submitted
-    try:
-        prepared(owner, {
-            'job_id':plan['job_id'], 'artifact_id':plan['resume_artifact_id'],
-            'prepared':True,
-        })
-    except Exception:
-        _finish(owner, application_order, 'unknown',
-                'Preparation state could not be recorded; inspect before retry')
-        raise
 
+    # Do not claim employer application preparation before the adapter has
+    # actually completed its operation. The reservation alone is not prep.
     try:
         result = adapter.submit(plan, resume_path, answers, attempt_key)
     except Exception:
@@ -146,6 +163,20 @@ def execute(owner, application_order, adapter, answers, *, allow_submission=Fals
         return {'status':'unknown', 'application_order':application_order}
 
     if result.status == 'confirmed':
+        # A submit adapter's own "confirmed" label is not independent
+        # proof. Require a separate employer-side verification step that
+        # checks receipt identity and the exact target posting.
+        verifier=getattr(adapter,'verify_confirmation',None)
+        try:
+            independently_verified = (
+                callable(verifier) and
+                verifier(plan,result,attempt_key) is True)
+        except Exception:
+            independently_verified = False
+        if not independently_verified:
+            _finish(owner, application_order, 'unknown',
+                    'Employer receipt could not be independently verified; reconcile before retry')
+            return {'status':'unknown', 'application_order':application_order}
         receipt = {
             'job_id':plan['job_id'], 'artifact_id':plan['resume_artifact_id'],
             'submitted':True, 'confirmed':True,
@@ -154,7 +185,11 @@ def execute(owner, application_order, adapter, answers, *, allow_submission=Fals
             'confirmation_url':result.confirmation_url,
         }
         try:
-            # Retains the existing exact-artifact and real-receipt contract.
+            # Only after a verified employer submission, advance the local
+            # preparation -> submitted contract for this exact artifact.
+            prepared(owner,{
+                'job_id':plan['job_id'],'artifact_id':plan['resume_artifact_id'],
+                'prepared':True})
             submitted(owner, receipt)
         except (ValueError, OSError, sqlite3.Error):
             _finish(owner, application_order, 'unknown',

@@ -15,11 +15,14 @@ class FakeAuthorizedAdapter:
     method = 'api'
     name = 'fixture-employer-api'
 
-    def __init__(self, outcome=None, *, supported=True, fail=False):
+    def __init__(self, outcome=None, *, supported=True, fail=False,
+                 independent_receipt=True):
         self.calls = []
+        self.verifications = []
         self.outcome = outcome
         self.supported = supported
         self.fail = fail
+        self.independent_receipt = independent_receipt
 
     def supports(self, plan):
         return self.supported
@@ -29,6 +32,12 @@ class FakeAuthorizedAdapter:
         if self.fail:
             raise TimeoutError('employer did not respond')
         return self.outcome
+
+    def verify_confirmation(self, plan, outcome, attempt_key):
+        # Fake acceptance test: a real adapter must query employer-side
+        # evidence using the immutable receipt and posting/attempt identity.
+        self.verifications.append((plan,outcome,attempt_key))
+        return self.independent_receipt
 
 
 class ExecutionContractTests(unittest.TestCase):
@@ -93,6 +102,29 @@ class ExecutionContractTests(unittest.TestCase):
         self.assertIsNone(attempt_status(worker, 1))
         self.assertEqual(adapter.calls, [])
 
+    def test_unverified_receipt_is_unknown_even_when_submit_says_confirmed(self):
+        worker = self.ready()
+        adapter = FakeAuthorizedAdapter(self.receipt(), independent_receipt=False)
+        result = execute(worker, 1, adapter, {'verified':True},
+                         allow_submission=True)
+        self.assertEqual(result['status'],'unknown')
+        self.assertEqual(len(adapter.verifications),1)
+        self.assertEqual(attempt_status(worker,1)['status'],'unknown')
+        self.assertEqual(self.service.snapshot()['applications'][0]['status'],'submission_unknown')
+        self.assertEqual(worker.status()[0]['status'],'submission_unknown')
+        self.assertEqual(self.service.snapshot()['applied_history'],[])
+        with self.assertRaises(ValueError):
+            execute(worker,1,adapter,{'verified':True},allow_submission=True)
+        self.assertEqual(len(adapter.calls),1)
+
+    def test_missing_independent_verifier_is_not_a_valid_submission(self):
+        worker = self.ready()
+        adapter = FakeAuthorizedAdapter(self.receipt())
+        adapter.verify_confirmation = None
+        result = execute(worker,1,adapter,{'verified':True},allow_submission=True)
+        self.assertEqual(result['status'],'unknown')
+        self.assertEqual(self.service.snapshot()['applied_history'],[])
+
     def test_timeout_is_uncertain_not_submitted_or_retried(self):
         worker = self.ready()
         adapter = FakeAuthorizedAdapter(fail=True)
@@ -100,6 +132,8 @@ class ExecutionContractTests(unittest.TestCase):
                          allow_submission=True)
         self.assertEqual(result['status'], 'unknown')
         self.assertEqual(attempt_status(worker, 1)['status'], 'unknown')
+        self.assertEqual(self.service.snapshot()['applications'][0]['status'],
+                         'submission_unknown')
         self.assertEqual(self.service.snapshot()['applied_history'], [])
         with self.assertRaises(ValueError):
             execute(worker, 1, adapter, {'verified':True},
@@ -113,6 +147,8 @@ class ExecutionContractTests(unittest.TestCase):
                          {'verified':True}, allow_submission=True)
         self.assertEqual(result['status'], 'rejected')
         self.assertEqual(attempt_status(worker, 1)['status'], 'rejected')
+        self.assertEqual(self.service.snapshot()['applications'][0]['status'],
+                         'submission_rejected')
         self.assertEqual(self.service.snapshot()['applied_history'], [])
 
     def test_incomplete_confirmation_is_unknown_not_success(self):
