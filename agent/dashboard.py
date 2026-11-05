@@ -637,7 +637,7 @@ def make_handler(service):
             if host != f'127.0.0.1:{self.server.server_port}' or (origin and origin != f'http://{host}'):
                 self.reply(403, {'error': 'Only same-origin local requests are allowed'})
                 return
-            if self.path not in ('/api/runs', '/api/profile', '/api/profile/import', '/api/resumes/regenerate', '/api/resumes/approve', '/api/jobs/enrich','/api/discovery/schedule','/api/resumes/handoff','/api/applications/prepared','/api/applications/submitted'):
+            if self.path not in ('/api/runs', '/api/profile', '/api/profile/import', '/api/resumes/regenerate', '/api/resumes/approve', '/api/jobs/enrich','/api/discovery/schedule','/api/resumes/handoff'):
                 self.reply(404, {'error': 'Not found'})
                 return
             try:
@@ -658,12 +658,6 @@ def make_handler(service):
                     from .handoff import promote_existing
                     exists=service.snapshot()['applications']
                     self.reply(200,{'promoted':promote_existing(service) if exists else 0})
-                elif self.path == '/api/applications/prepared':
-                    from .application_history import prepared
-                    self.reply(200,prepared(service,body))
-                elif self.path == '/api/applications/submitted':
-                    from .application_history import submitted
-                    self.reply(200,submitted(service,body))
                 elif self.path == '/api/discovery/schedule':
                     self.reply(200, service.set_schedule(body.get('every_minutes')))
                 elif self.path == '/api/jobs/enrich':
