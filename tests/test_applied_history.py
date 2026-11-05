@@ -50,7 +50,7 @@ class AppliedHistoryTests(__import__('unittest').TestCase):
         with self.assertRaises(Exception):submitted(self.service,body)
         self.assertEqual(self.service.snapshot()['applied_history'],[])
         self.assertEqual(self.service.snapshot()['applications'][0]['status'],'ready_for_submission')
-    def test_http_handoff_and_confirmation_contract(self):
+    def test_http_cannot_forge_employer_confirmations(self):
         app=self.ready(False)
         server=ThreadingHTTPServer(('127.0.0.1',0),make_handler(self.service))
         thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
@@ -62,9 +62,12 @@ class AppliedHistoryTests(__import__('unittest').TestCase):
             code,result=post('/api/resumes/handoff',{})
             self.assertEqual(code,200);self.assertEqual(result['promoted'],1)
             body=self.body(app)
-            self.assertEqual(post('/api/applications/prepared',{**body,'prepared':True})[0],200)
-            self.assertEqual(post('/api/applications/submitted',{**body,'confirmed':False})[0],400)
-            self.assertEqual(post('/api/applications/submitted',body)[0],200)
+            self.assertEqual(post('/api/applications/prepared',{**body,'prepared':True})[0],404)
+            self.assertEqual(post('/api/applications/submitted',body)[0],404)
+            self.assertEqual(self.service.snapshot()['applied_history'],[])
+            # The explicit internal integration contract still exists.
+            prepared(self.service,{**body,'prepared':True})
+            submitted(self.service,body)
             self.assertEqual(len(self.service.snapshot()['applied_history']),1)
             conn.close()
         finally:server.shutdown();server.server_close();thread.join()
