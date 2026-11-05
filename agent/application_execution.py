@@ -67,6 +67,9 @@ def execute(owner, application_order, adapter, answers, *, allow_submission=Fals
     adapter.name: stable adapter identifier
     adapter.supports(plan): True only if this exact employer is supported
     adapter.submit(plan, resume_path, answers, attempt_key): SubmissionOutcome
+    adapter.verify_confirmation(plan, outcome, attempt_key): bool
+        Must independently validate that the employer registered this exact
+        application; never accept only an API 200 or browser success banner.
 
     There is intentionally no generic POST-to-job-URL fallback. The adapter
     owns auth, form discovery, required fields and employer response parsing.
@@ -146,6 +149,20 @@ def execute(owner, application_order, adapter, answers, *, allow_submission=Fals
         return {'status':'unknown', 'application_order':application_order}
 
     if result.status == 'confirmed':
+        # A submit adapter's own "confirmed" label is not independent
+        # proof. Require a separate employer-side verification step that
+        # checks receipt identity and the exact target posting.
+        verifier=getattr(adapter,'verify_confirmation',None)
+        try:
+            independently_verified = (
+                callable(verifier) and
+                verifier(plan,result,attempt_key) is True)
+        except Exception:
+            independently_verified = False
+        if not independently_verified:
+            _finish(owner, application_order, 'unknown',
+                    'Employer receipt could not be independently verified; reconcile before retry')
+            return {'status':'unknown', 'application_order':application_order}
         receipt = {
             'job_id':plan['job_id'], 'artifact_id':plan['resume_artifact_id'],
             'submitted':True, 'confirmed':True,
