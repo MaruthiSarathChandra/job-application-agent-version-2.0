@@ -186,12 +186,12 @@ $('stage-review').textContent=stages.review_required||0;
 $('stage-agent3').textContent=(stages.ready_for_application||0)+(stages.requalification_required||0)+(stages.artifact_error||0);
 $('stage-agent4').textContent=stages.ready_for_submission||0;
 $('stage-applied').textContent=stages.confirmed_submissions||0;
-$('stage-explanation').textContent='Prepared resumes move into Agent 3; Agent 4 only receives a real prepared employer application. Confirmed applied history requires a submission receipt. Automated employer submission is not implemented.';
+$('stage-explanation').textContent='Confirmed applied history requires independent employer receipt verification. Automated employer submission is not enabled.'+((stages.submission_unknown||0)?' '+stages.submission_unknown+' uncertain attempts need employer-side reconciliation before any retry.':'');
 const taskByOrder=new Map((state.agent3_tasks||[]).map(t=>[t.application_order,t]));
 const apps=new Map((state.applications||[]).map(a=>[a.job_id,a]));const queued=new Map(state.queue.map(q=>[q.job_id,q]));const drafts=new Map((state.drafts||[]).map(d=>[d.queue_order,JSON.parse(d.result)]));const items=['application','submission','applied'].includes(view)
  ?(view==='applied'?(state.applied_history||[]):
   (state.applications||[]).filter(a=>view==='submission'
-      ?a.status==='ready_for_submission'
+      ?['ready_for_submission','submission_unknown','submission_rejected'].includes(a.status)
       :['review_required','ready_for_application','requalification_required','artifact_error','regenerating'].includes(a.status)))
    .map(a=>({...JSON.parse(a.payload).job,id:a.job_id,submission:JSON.parse(a.payload).submission}))
  :view==='all'?jobs
@@ -216,7 +216,7 @@ if(view==='recent'){
  const score=job.match_evidence?.score;
  status.append(el('span',typeof score==='number'&&Number.isFinite(score)?score+'% skill match':'Skill score unavailable','pill'));
 }else{
- status.append(el('span',view==='applied'?'Submitted':view==='submission'?'Ready for Agent 4':view==='application'&&app?({'ready_for_application':'Ready for Agent 3','review_required':'Review resume first','requalification_required':'Job no longer qualifies','artifact_error':'Resume file error','regenerating':'Resume regeneration pending'}[app.status]||app.status):app?({'ready_for_application':'Ready for Agent 3','ready_for_submission':'Ready for Agent 4','submitted':'Submitted','review_required':'Review required','requalification_required':'Blocked by current filters','artifact_error':'Resume file error','regenerating':'Regenerating'}[app.status]||app.status):view!=='all'&&q?q.status.replaceAll('_',' '):job.qualification.status.replaceAll('_',' '),'pill waiting'));
+ status.append(el('span',view==='applied'?'Submitted':view==='submission'?({'ready_for_submission':'Ready for Agent 4','submission_unknown':'Uncertain — reconcile with employer','submission_rejected':'Submission rejected'}[app?.status]||'Unverified state'):view==='application'&&app?({'ready_for_application':'Ready for Agent 3','review_required':'Review resume first','requalification_required':'Job no longer qualifies','artifact_error':'Resume file error','regenerating':'Resume regeneration pending'}[app.status]||app.status):app?({'ready_for_application':'Ready for Agent 3','ready_for_submission':'Ready for Agent 4','submitted':'Submitted','review_required':'Review required','requalification_required':'Blocked by current filters','artifact_error':'Resume file error','regenerating':'Regenerating'}[app.status]||app.status):view!=='all'&&q?q.status.replaceAll('_',' '):job.qualification.status.replaceAll('_',' '),'pill waiting'));
 }
 row.append(status,el('td',view==='recent'?(job.source_posted_at?showTime(job.source_posted_at):'Publication date not verified'):view==='application'&&app?'#'+app.sequence:q?'#'+q.sequence:'—','order'));$('rows').append(row)}
 $('activity').replaceChildren();for(const e of state.activity){const box=el('div',undefined,'event '+e.kind),body=el('div',e.message);body.append(el('small',e.created_at+' UTC · '+e.kind));box.append(el('i'),body);$('activity').append(box)}if(!state.activity.length)$('activity').append(el('div','No activity yet.','empty'))}
