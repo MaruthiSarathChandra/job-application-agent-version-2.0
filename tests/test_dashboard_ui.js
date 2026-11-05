@@ -17,11 +17,16 @@ const old={...job,job_id:'old1',id:'old1',title:'Senior Engineer',qualification:
 const payload={job,job_url:job.url,resume:{artifact_id:'artifact1'},submission:{id:'receipt1',submitted_at:'2026-11-02T00:00:00Z',confirmation_url:'https://example.com/confirmation'}};
 let state={build_version:'fixture',jobs:[job,old],latest_jobs:[job,old],qualified_jobs:[job],qualified_jobs_count:1,latest_jobs_count:2,latest_scan_counts:{processed:3,queued:1},queue:[{sequence:1,job_id:'job1',status:'resume_ready',last_error:'OpenAI network request failed',snapshot:JSON.stringify(job)}],runs:[],activity:[],sources:[],drafts:[],applications:[{sequence:1,job_id:'job1',resume_artifact_id:'artifact1',status:'ready_for_application',payload:JSON.stringify(payload)}],applied_history:[],source_scans:[],scanner:{enabled:true,interval_minutes:15},worker:{online:false},searched_count:55,board_options:[{id:'lever',name:'Lever',available:true},{id:'linkedin',name:'LinkedIn',available:false,reason:'Not implemented'}]};
 let requests=[];
-const context={document:{getElementById:id=>{assert(nodes.has(id),'Missing DOM element: '+id);return nodes.get(id)},createElement:tag=>new Element(tag)},localStorage:{getItem:()=>null,setItem(){}},window:{},URL,console,setInterval(){},fetch:async(url,options)=>{requests.push({url,options});return {ok:true,json:async()=>url==='/api/state'?state:{promoted:1}}}};
+const context={document:{getElementById:id=>{assert(nodes.has(id),'Missing DOM element: '+id);return nodes.get(id)},createElement:tag=>new Element(tag)},localStorage:{getItem:()=>null,setItem(){}},window:{},URL,console,setInterval(){},fetch:async(url,options)=>{requests.push({url,options});return {ok:true,json:async()=>url==='/api/state'?state:url==='/api/readiness'?{production_ready:false,checks:[{name:'Employer-authorized submission adapter',passed:false,message:'No real ATS submit adapter'}]}:{promoted:1}}}};
 vm.createContext(context);vm.runInContext(html.split('<script>')[1].split('</script>')[0],context);
 (async()=>{
  await vm.runInContext('refresh()',context);
  assert.equal(nodes.get('connection').textContent,'Connected');
+ await nodes.get('check-readiness').onclick();
+ assert.equal(nodes.get('release-status').textContent,
+              'Development preview · Production launch blocked');
+ assert(nodes.get('readiness-details').children.some(x=>x.textContent.includes('No real ATS')),
+        'Readiness panel must show real employer submission blocker');
  assert.equal(nodes.get('rows').children.length,1,'Only latest qualified jobs appear in results');
  assert.equal(nodes.get('rows').children[0].children[2].children[0].textContent,'90% skill match');
  assert.equal(nodes.get('total').textContent,2,'Title candidates count is latest scan, not saved history');
