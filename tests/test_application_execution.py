@@ -110,6 +110,8 @@ class ExecutionContractTests(unittest.TestCase):
         self.assertEqual(result['status'],'unknown')
         self.assertEqual(len(adapter.verifications),1)
         self.assertEqual(attempt_status(worker,1)['status'],'unknown')
+        self.assertEqual(self.service.snapshot()['applications'][0]['status'],'submission_unknown')
+        self.assertEqual(worker.status()[0]['status'],'submission_unknown')
         self.assertEqual(self.service.snapshot()['applied_history'],[])
         with self.assertRaises(ValueError):
             execute(worker,1,adapter,{'verified':True},allow_submission=True)
@@ -130,6 +132,8 @@ class ExecutionContractTests(unittest.TestCase):
                          allow_submission=True)
         self.assertEqual(result['status'], 'unknown')
         self.assertEqual(attempt_status(worker, 1)['status'], 'unknown')
+        self.assertEqual(self.service.snapshot()['applications'][0]['status'],
+                         'submission_unknown')
         self.assertEqual(self.service.snapshot()['applied_history'], [])
         with self.assertRaises(ValueError):
             execute(worker, 1, adapter, {'verified':True},
@@ -143,6 +147,8 @@ class ExecutionContractTests(unittest.TestCase):
                          {'verified':True}, allow_submission=True)
         self.assertEqual(result['status'], 'rejected')
         self.assertEqual(attempt_status(worker, 1)['status'], 'rejected')
+        self.assertEqual(self.service.snapshot()['applications'][0]['status'],
+                         'submission_rejected')
         self.assertEqual(self.service.snapshot()['applied_history'], [])
 
     def test_incomplete_confirmation_is_unknown_not_success(self):
