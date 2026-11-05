@@ -598,6 +598,9 @@ def make_handler(service):
             elif self.path == '/api/diagnostics':
                 from .diagnostics import report
                 self.reply(200, report(service.database, service.profile_path))
+            elif self.path == '/api/readiness':
+                from .readiness import assess
+                self.reply(200, assess(service.database, service.profile_path))
             elif self.path == '/api/state':
                 self.reply(200, service.snapshot())
             else:
