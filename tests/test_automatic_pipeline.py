@@ -67,6 +67,32 @@ class AutomaticPipelineTests(unittest.TestCase):
         self.service.start({**self.search,'country_codes':['CA']},background=False)
         self.assertEqual(promote_existing(self.worker),0)
         self.assertEqual(self.service.snapshot()['applications'][0]['status'],'requalification_required')
+    def test_blocked_resume_recovers_after_filters_change_without_regeneration(self):
+        self.ready(False)
+        self.service.start({**self.search,'country_codes':['CA']},background=False)
+        self.assertEqual(promote_existing(self.worker),0)
+        self.service.start(self.search,background=False)
+        self.assertEqual(promote_existing(self.worker),1)
+        self.assertEqual(promote_existing(self.worker),0)
+        self.assertEqual(self.service.snapshot()['applications'][0]['status'],'ready_for_application')
+        self.generator.assert_called_once()
+
+    def test_missing_artifact_recovers_only_after_original_bytes_restored(self):
+        self.ready(False)
+        with self.service.connect() as db:
+            path=Path(db.execute('SELECT path FROM resume_artifacts').fetchone()[0])
+        original=path.read_bytes()
+        path.unlink()
+        self.assertEqual(promote_existing(self.worker),0)
+        path.write_bytes(b'wrong artifact')
+        self.assertEqual(promote_existing(self.worker),0)
+        path.write_bytes(original)
+        self.assertEqual(promote_existing(self.worker),1)
+        self.assertEqual(promote_existing(self.worker),0)
+        self.generator.assert_called_once()
+        with self.service.connect() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM outbox WHERE topic='applications.ready.v1'").fetchone()[0],1)
+
     def test_current_filters_checked_before_paid_call_and_requeue_if_changed(self):
         self.service.start({**self.search,'country_codes':['CA']},background=False)
         self.worker.process_one()
@@ -154,3 +180,4 @@ class AutomaticPipelineTests(unittest.TestCase):
              patch('agent.resume_worker.Worker.process_one',side_effect=[True,True,KeyboardInterrupt]) as process:
             main()
         self.assertEqual(process.call_count,3)
+

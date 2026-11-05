@@ -26,14 +26,14 @@ def promote_existing(owner):
     with owner.connect() as db:
         rows=[dict(r) for r in db.execute('''SELECT a.*,q.sequence AS queue_order,q.snapshot,q.run_id,
             f.path,f.sha256 FROM application_queue a JOIN resume_queue q ON a.job_id=q.job_id
-            JOIN resume_artifacts f ON f.id=a.resume_artifact_id WHERE a.status='review_required' ''')]
+            JOIN resume_artifacts f ON f.id=a.resume_artifact_id WHERE a.status IN ('review_required','requalification_required','artifact_error') ''')]
     count=0
     for row in rows:
         job=json.loads(row['snapshot'])
         decision=current_decision(owner,job)
         if decision['status']!='matched':
             with owner.connect() as db:
-                db.execute("UPDATE application_queue SET status='requalification_required' WHERE sequence=? AND status='review_required'",(row['sequence'],))
+                db.execute("UPDATE application_queue SET status='requalification_required' WHERE sequence=? AND status IN ('review_required','requalification_required','artifact_error')",(row['sequence'],))
                 db.execute('INSERT INTO activity(run_id,kind,message) VALUES(?,?,?)',(row['run_id'],'handoff_blocked',f"#{row['queue_order']}: existing resume retained; job no longer matches current filters"))
             continue
         try:
@@ -41,17 +41,18 @@ def promote_existing(owner):
                 raise ValueError('Artifact checksum failed')
         except (OSError,ValueError):
             with owner.connect() as db:
-                db.execute("UPDATE application_queue SET status='artifact_error' WHERE sequence=? AND status='review_required'",(row['sequence'],))
+                db.execute("UPDATE application_queue SET status='artifact_error' WHERE sequence=? AND status IN ('review_required','requalification_required','artifact_error')",(row['sequence'],))
                 db.execute('INSERT INTO activity(run_id,kind,message) VALUES(?,?,?)',(row['run_id'],'handoff_error',f"#{row['queue_order']}: artifact missing or corrupt; no handoff"))
             continue
         with owner.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             payload=json.loads(row['payload'])
             payload.update(status='ready_for_application',handoff_mode='automatic',review_status='not_reviewed',job_url=job['url'])
-            changed=db.execute("UPDATE application_queue SET status='ready_for_application',payload=? WHERE sequence=? AND status='review_required' AND resume_artifact_id=?",(json.dumps(payload),row['sequence'],row['resume_artifact_id']))
+            changed=db.execute("UPDATE application_queue SET status='ready_for_application',payload=? WHERE sequence=? AND status IN ('review_required','requalification_required','artifact_error') AND resume_artifact_id=?",(json.dumps(payload),row['sequence'],row['resume_artifact_id']))
             if not changed.rowcount: continue
             db.execute('INSERT OR IGNORE INTO outbox(event_key,topic,payload) VALUES(?,?,?)',('applications.ready:'+row['job_id'],'applications.ready.v1',json.dumps(payload)))
             db.execute("UPDATE resume_queue SET status='resume_ready' WHERE sequence=?",(row['queue_order'],))
             db.execute('INSERT INTO activity(run_id,kind,message) VALUES(?,?,?)',(row['run_id'],'handoff_complete',f"#{row['queue_order']}: existing resume + JD + job link sent to Agent 3 queue"))
             count+=1
     return count
+
