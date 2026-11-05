@@ -111,6 +111,13 @@ class DashboardTests(unittest.TestCase):
                 html = response.read().decode('utf-8')
                 self.assertIn('Qualified opportunities', html)
                 self.assertIn('→', html)
+            conn.request('GET','/api/readiness')
+            readiness_response=conn.getresponse()
+            self.assertEqual(readiness_response.status,200)
+            readiness=json.loads(readiness_response.read())
+            self.assertFalse(readiness['production_ready'])
+            self.assertTrue(any(c['name']=='Employer-authorized submission adapter'
+                                and not c['passed'] for c in readiness['checks']))
             conn.request('POST','/api/runs', json.dumps(self.body), {'Origin':'https://evil.example'})
             response = conn.getresponse()
             self.assertEqual(response.status,403)

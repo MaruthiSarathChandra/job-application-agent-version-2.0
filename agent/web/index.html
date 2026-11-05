@@ -6,7 +6,15 @@ dialog{border:1px solid var(--line);border-radius:12px;width:min(1000px,95vw);pa
 </style></head><body>
 <aside><div class="brand">job<b>agent</b><span style="font-size:12px;color:#8b9bbb"> / 02</span></div><div class="sub">APPLICATION WORKSPACE</div><nav aria-label="Workflow"><div class="active">◈ &nbsp; Job discovery</div><div><a href="/profile" style="color:inherit">▤ &nbsp; Resume profile</a></div><div>◇ &nbsp; Accounts <small>Later</small></div><div>↗ &nbsp; Applications <small>Later</small></div></nav><div class="sidefoot"><span class="dot"></span> Local workspace<br>Discovery and application queues</div></aside>
 <main><header class="top"><div><h1>Discover your next opportunity.</h1><p>Follow jobs from discovery to confirmed applications.</p></div><span class="tag"><span class="dot"></span><span id="connection">Connecting…</span></span></header>
-<p style="margin-top:16px"><a href="/profile">Create or edit your resume profile →</a></p><div class="steps"><span class="step active">01 &nbsp; Discover & qualify</span><span class="step">02 &nbsp; Prepare resume</span><span class="step">03 &nbsp; Account access</span><span class="step">04 &nbsp; Apply</span></div>
+<p style="margin-top:16px"><a href="/profile">Create or edit your resume profile →</a></p>
+<details id="production-readiness" class="panel composer" style="margin:16px 0;border-left:4px solid #ae7445">
+ <summary><strong id="release-status">Development preview · Employer submission NOT enabled</strong></summary>
+ <p class="note" style="margin:10px 0">Job searches, resumes and Agent 3 preflight can run locally. They do not submit employer forms or create real employer receipts. Production launch is blocked until one authorized end-to-end application has been verified.</p>
+ <button id="check-readiness" type="button">Check production blockers</button>
+ <div id="readiness-details" class="note" role="status" aria-live="polite" style="margin-top:10px"></div>
+ <p class="note" style="margin-top:10px"><a href="https://github.com/MaruthiSarathChandra/job-application-agent-version-2.0/issues/12" target="_blank" rel="noopener noreferrer">End-to-end acceptance criteria (Issue #12)</a></p>
+</details>
+<div class="steps"><span class="step active">01 &nbsp; Discover & qualify</span><span class="step">02 &nbsp; Prepare resume</span><span class="step">03 &nbsp; Account access</span><span class="step">04 &nbsp; Apply</span></div>
 <form id="search" class="panel composer">
 <div class="eyebrow">1 · Find requested job titles</div>
 <label for="prompt">Job titles to search</label><textarea id="prompt" required placeholder="Software Engineer | Backend Developer | Java Developer">Software Engineer | Backend Developer | Java Developer</textarea>
@@ -216,6 +224,14 @@ async function refresh(){try{const r=await fetch('/api/state');if(!r.ok)throw Er
 $('search').onsubmit=async e=>{e.preventDefault();$('error').textContent='';$('start').disabled=true;try{
 const body={prompt:$('prompt').value,board_provider:$('board-provider').value,sources:split($('sources').value),locations:split($('locations').value,';'),jd_keywords:split($('keywords').value),excluded_title_keywords:[],country_codes:$('region').value?[$('region').value]:[],posted_within_hours:Number($('posted-window').value),time_basis:'published',max_required_years:$('required-years').value===''?null:Number($('required-years').value),min_match_percent:Number($('match-threshold').value),batch_size:55,title_first:true};
 const r=await fetch('/api/runs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const data=await r.json();if(!r.ok)throw Error(data.error);localStorage.setItem('discovery-settings-v5',JSON.stringify(body));await refresh()}catch(e){$('error').textContent=e.message;$('start').disabled=false}};
+$('check-readiness').onclick=async()=>{const dest=$('readiness-details');dest.replaceChildren();try{
+  const response=await fetch('/api/readiness');if(!response.ok)throw Error('Could not inspect readiness');
+  const report=await response.json();
+  $('release-status').textContent=report.production_ready?'Production readiness checks passed':'Development preview · Production launch blocked';
+  for(const check of report.checks||[]){
+    dest.append(el('div',(check.passed?'✓ ':'• ')+check.name+': '+check.message,'note'));
+  }
+}catch(error){dest.textContent='Readiness check unavailable: '+error.message}};
 $('recover-handoff').onclick=async()=>{const button=$('recover-handoff');button.disabled=true;try{const r=await fetch('/api/resumes/handoff',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});const data=await r.json();if(!r.ok)throw Error(data.error);$('handoff-result').textContent=' Moved '+data.promoted+' completed resumes. Check activity for blocked jobs.';await refresh()}catch(e){$('handoff-result').textContent=e.message}finally{button.disabled=false}};
 $('save-schedule').onclick=async()=>{try{const r=await fetch('/api/discovery/schedule',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({every_minutes:Number($('scan-interval').value)})});const data=await r.json();if(!r.ok)throw Error(data.error);$('schedule-result').textContent=' Saved';await refresh()}catch(e){$('schedule-result').textContent=e.message}};
 let companyRequest=0;

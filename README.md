@@ -1,5 +1,12 @@
 # Job Application Agent 2.0
 
+> **Status: local development preview, NOT production-ready.** Run
+> `python -m agent.readiness` to see the exact blockers. No actual employer
+> application submitter is connected. **Issue #12** is the single
+> end-to-end milestone: [one employer-confirmed application](https://github.com/MaruthiSarathChandra/job-application-agent-version-2.0/issues/12).
+> Offline CI passing does not demonstrate live submission.
+
+
 A local Python 3.11+ dashboard with independent job discovery and resume workers. SQLite queues and transactional outbox records connect the workers. Agent 3 receives application bundles; account creation and application submission are not implemented.
 
 ## Start both agents
@@ -100,7 +107,7 @@ The new [Agent 3 execution boundary](docs/v3-agent3-execution.md) reserves each 
 
 ## Agent 3 and Agent 4 status
 
-This repository has queue contracts, not working account-creation or submission adapters. After actual preparation, Agent 3 can POST `/api/applications/prepared` with `job_id`, `artifact_id`, and `prepared: true`. After actual confirmed submission, Agent 4 can POST `/api/applications/submitted` with the same IDs, `submitted: true`, `confirmed: true`, `submission_id`, timezone-aware `submitted_at`, and an HTTPS `confirmation_url`. These endpoints record trusted local worker reports; they do not submit or independently confirm with employers. Do not call them to simulate real applications.
+This repository has queue contracts, not working account-creation or submission adapters. **The untrusted dashboard HTTP paths `/api/applications/prepared` and `/api/applications/submitted` have been removed.** A local HTTP client must not be able to fabricate a successful employer submission by merely supplying `confirmed: true`. Internal `application_execution.execute`, once provided a genuinely authorized employer adapter, is the application execution boundary. It reserves a unique attempt before any external side effect and requires a real employer-provided response. The existing `application_history.prepared` and `application_history.submitted` helpers remain internal worker persistence interfaces—not public dashboard routes. No live employer adapter has yet been implemented or tested.
 
 Applied history retains the exact JD, job link, resume artifact and receipt. Failed/unconfirmed outcomes never create an applied record. Repeated identical receipts are idempotent; conflicting receipts are rejected. Once prepared/submitted, regeneration cannot replace the resume used for that application.
 
