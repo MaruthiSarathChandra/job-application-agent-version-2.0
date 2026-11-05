@@ -24,12 +24,12 @@ Calling application_execution.execute requires an exact preflighted queue positi
 | State | Meaning | Automatic retry |
 |---|---|---|
 | No attempt | Resume preflighted; waiting for supported adapter | N/A |
-| sending | Attempt reserved before external request | Never |
-| confirmed | Receipt validated and stored in applied history | Never |
-| rejected | Employer rejected the application | Never |
-| unknown | Timeout, crash, ambiguous response or invalid receipt | Never; reconcile first |
+| sending | Attempt reserved before external request; NOT yet prepared/submitted | Never |
+| confirmed | Independently verified receipt stored in Applied History | Never |
+| rejected | Employer rejected; visible as `submission_rejected` in the application queue | Never |
+| unknown | Timeout, crash, ambiguous response, missing verifier or invalid receipt; visible as `submission_unknown` | Never; reconcile first |
 
-An application queue position has at most one execution attempt in the initial slice. A timeout or lost response may still mean the employer received an application, so a retry requires checking the employer first.
+An application queue position has at most one execution attempt in the initial slice. The queue is not promoted to `ready_for_submission` merely because an attempt was reserved. Preparation and Applied History are recorded only after the adapter returns a confirmed result **and** its independent employer-side verification passes. Unknown/rejected attempts get separate persistent states, remain visible for investigation, and never receive automatic retries. A timeout or lost response may still mean the employer received the application, so any retry requires employer-side reconciliation first.
 
 Agent 3 status now exposes submission_attempt_status and submission_method. The existing Applied History remains the source of truth for confirmed application receipts.
 
